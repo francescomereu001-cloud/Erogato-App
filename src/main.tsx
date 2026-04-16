@@ -95,7 +95,7 @@ type WorkbookImport = {
   policyMonthly: PolicyMonthlyMetric[];
 };
 
-const STORAGE_KEY = 'dealer_erogato_app_v7';
+const STORAGE_KEY = 'dealer_erogato_app_v8b';
 const MONTHS_IT = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
 const MONTHS_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
 const MONTH_MAP: Record<string, number> = {
@@ -595,13 +595,19 @@ function App() {
   }, [policyMonthlyMetrics, currentYear]);
 
   const productMonthlySeries = useMemo(() => {
-    if (!hasExtraFilters) {
-      const fromMetrics = productSeriesFromMetrics(productMonthlyMetrics, currentYear);
-      const hasValues = fromMetrics.some((row) => row.AUTO > 0 || row.POS > 0);
-      if (hasValues) return fromMetrics;
-    }
-    return productSeriesFromRows(filteredRows, currentYear);
-  }, [hasExtraFilters, productMonthlyMetrics, filteredRows, currentYear]);
+    // Fonte di verità: DATABASE.
+    // Regola operativa:
+    // AUTO = 20, 21, 23, 36
+    // POS = tutto il resto.
+    // Usiamo sempre le righe filtrate del DATABASE per evitare mismatch del foglio pivot.
+    const fromRows = productSeriesFromRows(filteredRows, currentYear);
+    const hasValues = fromRows.some((row) => row.AUTO > 0 || row.POS > 0);
+    if (hasValues) return fromRows;
+
+    // Fallback solo se non ci sono righe disponibili.
+    const fromMetrics = productSeriesFromMetrics(productMonthlyMetrics, currentYear);
+    return fromMetrics;
+  }, [filteredRows, currentYear, productMonthlyMetrics]);
 
   const kpis = useMemo(() => {
     const erogato = filteredRows.reduce((sum, row) => sum + row.importoFinanziato, 0);

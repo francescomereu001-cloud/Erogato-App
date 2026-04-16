@@ -26,7 +26,28 @@ function num(n:number,digits=0){ return new Intl.NumberFormat('it-IT',{maximumFr
 function pct(n:number){ return `${num(Number(n||0)*100,1)}%`; }
 function safeUpper(v:unknown){ return String(v ?? '').trim().toUpperCase(); }
 function cleanNumber(value:unknown){ if(typeof value==='number') return Number.isFinite(value)?value:0; if(typeof value==='string'){ const normalized=value.replace(/\./g,'').replace(',','.').replace(/[^0-9.-]/g,''); const parsed=Number(normalized); return Number.isFinite(parsed)?parsed:0;} return 0; }
-function excelDateToDate(value:unknown): Date | null { if(!value && value!==0) return null; if(value instanceof Date) return value; if(typeof value==='number'){ const utcDays=Math.floor(value-25569); const utcValue=utcDays*86400; return new Date(utcValue*1000);} if(typeof value==='string'){ const direct=new Date(value); if(!Number.isNaN(direct.getTime())) return direct; const match=value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); if(match){ const d=Number(match[1]); const m=Number(match[2])-1; const y=Number(match[3].length===2 ? `20${match[3]}` : match[3]); return new Date(y,m,d);} } return null; }
+function excelDateToDate(value:unknown): Date | null {
+  if (!value && value !== 0) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') {
+    const utcDays = Math.floor(value - 25569);
+    const utcValue = utcDays * 86400;
+    return new Date(utcValue * 1000);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const itMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (itMatch) {
+      const d = Number(itMatch[1]);
+      const m = Number(itMatch[2]) - 1;
+      const y = Number(itMatch[3].length === 2 ? `20${itMatch[3]}` : itMatch[3]);
+      return new Date(y, m, d);
+    }
+    const direct = new Date(trimmed);
+    if (!Number.isNaN(direct.getTime())) return direct;
+  }
+  return null;
+}
 function normalizeProduct(code:unknown){ const raw=safeUpper(code); if(['20','21'].includes(raw)) return 'AUTO'; if(['30','31'].includes(raw)) return 'POS'; return raw || 'N/D';}
 function pick(row: Record<string, unknown>, keys: string[], fallback=''){ for(const key of keys){ if(row[key]!==undefined && row[key]!==null && row[key]!=='') return row[key] as string;} return fallback; }
 function workingDaysInMonth(year:number, monthIndex:number){ const date=new Date(year,monthIndex,1); let count=0; while(date.getMonth()===monthIndex){ const day=date.getDay(); if(day!==0 && day!==6) count+=1; date.setDate(date.getDate()+1);} return count; }
@@ -59,9 +80,13 @@ function normalizeRows(rows: Record<string, unknown>[], fileName: string): Row[]
     const fiscalCode = pick(row, ['CODICE_FISCALE_CLI', 'CF']);
     const amount = cleanNumber(pick(row, ['IMPORTO_FINANZIATO', 'IMPORTO FINANZIATO']));
     const netAmount = cleanNumber(pick(row, ['IMPORTO_NETTO_EROGATO', 'IMPORTO NETTO EROGATO']));
-    const provvigione = cleanNumber(pick(row, ['PROVV', 'PROVVIGIONE']));
+    let provvigione = cleanNumber(pick(row, ['PROVV', 'PROVVIGIONE']));
     const polizza = cleanNumber(pick(row, ['importo polizza ', 'IMPORTO_POLIZZA', 'IMPORTO POLIZZA']));
-    const product = normalizeProduct(pick(row, ['PRODOTTO', 'CODICE_PRODOTTO']));
+    const productCode = String(pick(row, ['PRODOTTO', 'CODICE_PRODOTTO'])).trim();
+    const product = normalizeProduct(productCode);
+    if (!provvigione && amount > 0) {
+      provvigione = productCode === '31' ? amount * 0.00825 : amount * 0.0055;
+    }
     const numeroRate = cleanNumber(pick(row, ['NUMERO_RATE', 'N_RATE']));
     const tabella = pick(row, ['TABELLA_FINANZ', 'TABELLA']);
     const subagente = pick(row, ['DES_SUBAGENTE', 'SUBAGENTE'], 'N/D');

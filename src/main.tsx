@@ -189,9 +189,11 @@ function normalizeProductLabel(code: string) {
   return code ? `Prodotto ${code}` : 'N/D';
 }
 function getProductFamilyFromCode(code: string): 'AUTO' | 'POS' | 'ALTRO' {
-  if (['30', '31', '32', '33', '34', '35', '36'].includes(code)) return 'POS';
-  if (['20', '21', '22', '23', '24', '25', '26', '27', '28', '29'].includes(code)) return 'AUTO';
-  return 'ALTRO';
+  // Regola operativa utente:
+  // AUTO = 20, 21, 23, 36
+  // POS = tutto il resto
+  if (['20', '21', '23', '36'].includes(code)) return 'AUTO';
+  return code ? 'POS' : 'ALTRO';
 }
 function workingDaysInMonth(year: number, monthIndex: number) {
   const date = new Date(year, monthIndex, 1);

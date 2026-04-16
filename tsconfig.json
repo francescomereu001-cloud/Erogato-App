@@ -1,21 +1,27 @@
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
-    "allowJs": false,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
-    "strict": true,
-    "forceConsistentCasingInFileNames": true,
-    "module": "ESNext",
-    "moduleResolution": "Node",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx"
-  },
-  "include": ["src"],
-  "references": []
-}
+# Dealer Erogato App
+
+Web app Vite/React per caricare gli export Excel della banca e costruire uno storico multianno.
+
+## Avvio locale
+
+```bash
+npm install
+npm run dev
+```
+
+## Build
+
+```bash
+npm run build
+```
+
+## Note importanti
+
+- data di riferimento: `DATA_LIQUIDAZIONE`
+- erogato: `IMPORTO_FINANZIATO`
+- dealer: `DES_CONVENZIONATO`
+- filiale/subagente: `DES_SUBAGENTE`
+- polizze: `importo polizza `
+- provvigioni: `PROVV`; se mancano vengono ricalcolate con:
+  - prodotto `31` = 0,825%
+  - altri prodotti = 0,55%

@@ -26,10 +26,10 @@ import {
   Wallet,
   Download,
   Database,
-  Building2,
   Search,
   Store,
   RefreshCw,
+  Boxes,
 } from 'lucide-react';
 import './styles.css';
 
@@ -55,7 +55,6 @@ type AppRow = {
   importoNettoErogato: number;
   dataCaricamento: string | null;
   dataLiquidazione: string | null;
-  modPagamento: string;
   indirizzo: string;
   cap: string;
   localita: string;
@@ -72,15 +71,47 @@ type Settings = {
   stagionalitaByYear: Record<number, number[]>;
 };
 
+type ProductMonthlyMetric = {
+  key: string;
+  year: number;
+  month: number;
+  family: 'AUTO' | 'POS';
+  amount: number;
+};
+
+type PolicyMonthlyMetric = {
+  key: string;
+  year: number;
+  month: number;
+  dealer: string | '__TOTAL__';
+  amount: number;
+};
+
 type WorkbookImport = {
   fileName: string;
   rows: SourceRow[];
   databaseSheetName: string;
+  productMonthly: ProductMonthlyMetric[];
+  policyMonthly: PolicyMonthlyMetric[];
 };
 
-const STORAGE_KEY = 'dealer_erogato_app_v6';
+const STORAGE_KEY = 'dealer_erogato_app_v7';
 const MONTHS_IT = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
 const MONTHS_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
+const MONTH_MAP: Record<string, number> = {
+  gen: 1, gennaio: 1,
+  feb: 2, febbraio: 2,
+  mar: 3, marzo: 3,
+  apr: 4, aprile: 4,
+  mag: 5, maggio: 5,
+  giu: 6, giugno: 6,
+  lug: 7, luglio: 7,
+  ago: 8, agosto: 8,
+  set: 9, settembre: 9,
+  ott: 10, ottobre: 10,
+  nov: 11, novembre: 11,
+  dic: 12, dicembre: 12,
+};
 const DEFAULT_2026_STAGIONALITA = [0.0422467773, 0.0679778571, 0.0611428174, 0.0612145238, 0.0556212658, 0.0852724183, 0.1160142533, 0.0483985297, 0.10272674, 0.1183406974, 0.0991278003, 0.1419163194];
 const DEFAULT_SETTINGS: Settings = {
   annualTargetByYear: { 2026: 10200000 },
@@ -104,6 +135,9 @@ function safeUpper(v: unknown) {
 }
 function normalizeText(v: unknown) {
   return String(v ?? '').trim();
+}
+function normalizeMonthLabel(value: unknown) {
+  return String(value ?? '').trim().toLowerCase().replace('.', '');
 }
 function cleanNumber(value: unknown) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -134,21 +168,17 @@ function parseItalianDateString(value: string) {
 }
 function excelDateToDate(value: unknown): Date | null {
   if (!value && value !== 0) return null;
-  if (value instanceof Date) {
-    return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12, 0, 0, 0);
-  }
+  if (value instanceof Date) return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12, 0, 0, 0);
   if (typeof value === 'number') {
     const parsed = XLSX.SSF.parse_date_code(value);
     if (!parsed) return null;
     return new Date(parsed.y, parsed.m - 1, parsed.d, 12, 0, 0, 0);
   }
   if (typeof value === 'string') {
-    const itDate = parseItalianDateString(value);
-    if (itDate) return itDate;
+    const it = parseItalianDateString(value);
+    if (it) return it;
     const direct = new Date(value);
-    if (!Number.isNaN(direct.getTime())) {
-      return new Date(direct.getFullYear(), direct.getMonth(), direct.getDate(), 12, 0, 0, 0);
-    }
+    if (!Number.isNaN(direct.getTime())) return new Date(direct.getFullYear(), direct.getMonth(), direct.getDate(), 12, 0, 0, 0);
   }
   return null;
 }
@@ -157,6 +187,11 @@ function normalizeProductLabel(code: string) {
   if (code === '21') return 'Prodotto 21';
   if (code === '24') return 'Prodotto 24';
   return code ? `Prodotto ${code}` : 'N/D';
+}
+function getProductFamilyFromCode(code: string): 'AUTO' | 'POS' | 'ALTRO' {
+  if (['30', '31', '32', '33', '34', '35', '36'].includes(code)) return 'POS';
+  if (['20', '21', '22', '23', '24', '25', '26', '27', '28', '29'].includes(code)) return 'AUTO';
+  return 'ALTRO';
 }
 function workingDaysInMonth(year: number, monthIndex: number) {
   const date = new Date(year, monthIndex, 1);
@@ -183,6 +218,80 @@ function workedDaysInMonth(year: number, monthIndex: number, referenceDate = new
   return count;
 }
 
+function detectWorkbookYear(rows: SourceRow[], fileName: string) {
+  const years = rows
+    .map((row) => excelDateToDate(pick(row, ['DATA_LIQUIDAZIONE', 'DATA_CARICAMENTO'])))
+    .filter((date): date is Date => Boolean(date))
+    .map((date) => date.getFullYear());
+  if (years.length) {
+    const counts = new Map<number, number>();
+    years.forEach((year) => counts.set(year, (counts.get(year) || 0) + 1));
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+  }
+  const match = fileName.match(/20\d{2}/);
+  return match ? Number(match[0]) : new Date().getFullYear();
+}
+
+function parseProductMonthlyFromWorkbook(workbook: XLSX.WorkBook, year: number): ProductMonthlyMetric[] {
+  const sheetName = workbook.SheetNames.find((name) => name.toUpperCase().includes('EROGATO PER PRODOTTO'));
+  if (!sheetName) return [];
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: '' }) as unknown[][];
+  const headerRowIndex = rows.findIndex((row) => normalizeMonthLabel(row[0]) === 'prodotto');
+  if (headerRowIndex < 0) return [];
+  const header = rows[headerRowIndex].map(normalizeMonthLabel);
+  const metrics: ProductMonthlyMetric[] = [];
+  for (let i = headerRowIndex + 1; i < rows.length; i += 1) {
+    const row = rows[i];
+    const label = normalizeMonthLabel(row[0]);
+    if (!label) continue;
+    if (label.includes('totale')) break;
+    const family: 'AUTO' | 'POS' | null = label.includes('auto') ? 'AUTO' : (label.includes('p.o.s') || label === 'pos' || label.includes('p o s') ? 'POS' : null);
+    if (!family) continue;
+    for (let col = 1; col < header.length; col += 1) {
+      const month = MONTH_MAP[header[col]];
+      if (!month) continue;
+      metrics.push({
+        key: `${year}|${month}|${family}`,
+        year,
+        month,
+        family,
+        amount: cleanNumber(row[col]),
+      });
+    }
+  }
+  return metrics;
+}
+
+function parsePolicyMonthlyFromWorkbook(workbook: XLSX.WorkBook, year: number): PolicyMonthlyMetric[] {
+  const sheetName = workbook.SheetNames.find((name) => name.toUpperCase().includes('REPORT POLIZZE'));
+  if (!sheetName) return [];
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: '' }) as unknown[][];
+  const monthHeaderIndex = rows.findIndex((row) => row.some((cell) => normalizeMonthLabel(cell) === 'totale complessivo') && row.some((cell) => MONTH_MAP[normalizeMonthLabel(cell)]));
+  if (monthHeaderIndex < 0) return [];
+  const header = rows[monthHeaderIndex].map(normalizeMonthLabel);
+  const dataStartIndex = rows.findIndex((row, index) => index > monthHeaderIndex && normalizeMonthLabel(row[0]) === 'etichette di riga');
+  const start = dataStartIndex >= 0 ? dataStartIndex + 1 : monthHeaderIndex + 1;
+  const metrics: PolicyMonthlyMetric[] = [];
+  for (let i = start; i < rows.length; i += 1) {
+    const row = rows[i];
+    const dealerLabel = normalizeText(row[0]);
+    if (!dealerLabel) continue;
+    const dealer = dealerLabel.toLowerCase().includes('totale complessivo') ? '__TOTAL__' : dealerLabel;
+    for (let col = 1; col < header.length; col += 1) {
+      const month = MONTH_MAP[header[col]];
+      if (!month) continue;
+      metrics.push({
+        key: `${year}|${month}|${dealer}`,
+        year,
+        month,
+        dealer,
+        amount: cleanNumber(row[col]),
+      });
+    }
+  }
+  return metrics;
+}
+
 async function readWorkbookFile(file: File): Promise<WorkbookImport> {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -192,7 +301,14 @@ async function readWorkbookFile(file: File): Promise<WorkbookImport> {
       const databaseSheetName = workbook.SheetNames.find((name) => name.toUpperCase().includes('DATABASE')) || workbook.SheetNames[0];
       const sheet = workbook.Sheets[databaseSheetName];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: true }) as SourceRow[];
-      resolve({ fileName: file.name, rows, databaseSheetName });
+      const year = detectWorkbookYear(rows, file.name);
+      resolve({
+        fileName: file.name,
+        rows,
+        databaseSheetName,
+        productMonthly: parseProductMonthlyFromWorkbook(workbook, year),
+        policyMonthly: parsePolicyMonthlyFromWorkbook(workbook, year),
+      });
     };
     reader.readAsArrayBuffer(file);
   });
@@ -208,9 +324,7 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
       const amount = cleanNumber(pick(row, ['IMPORTO_FINANZIATO']));
       const netAmount = cleanNumber(pick(row, ['IMPORTO_NETTO_EROGATO']));
       const prodottoCode = normalizeText(pick(row, ['PRODOTTO']));
-      const polizzaDaColonna = cleanNumber(pick(row, ['importo polizza ', 'IMPORTO POLIZZA', 'IMPORTO_POLIZZA']));
-      const polizzaDaPagamento = cleanNumber(pick(row, ['MOD_PAGAMENTO']));
-      const polizza = polizzaDaColonna || polizzaDaPagamento || 0;
+      let polizza = cleanNumber(pick(row, ['importo polizza ', 'IMPORTO POLIZZA', 'IMPORTO_POLIZZA']));
       let provvigione = cleanNumber(pick(row, ['PROVV', 'PROVVIGIONE']));
       if (!provvigione && amount > 0) {
         provvigione = prodottoCode === '31' ? amount * 0.00825 : amount * 0.0055;
@@ -230,8 +344,10 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
       const occ = (occurrence.get(stableIdentity) || 0) + 1;
       occurrence.set(stableIdentity, occ);
       const rowId = `${stableIdentity}#${occ}`;
-
       const finalDate = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate(), 12, 0, 0, 0);
+      if (typeof pick(row, ['importo polizza ']) === 'string' && polizza === 0) {
+        polizza = 0;
+      }
 
       return {
         rowId,
@@ -253,7 +369,6 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
         importoNettoErogato: netAmount,
         dataCaricamento: loadingDate ? loadingDate.toISOString() : null,
         dataLiquidazione: liquidationDate ? liquidationDate.toISOString() : null,
-        modPagamento: normalizeText(pick(row, ['MOD_PAGAMENTO'])),
         indirizzo: normalizeText(pick(row, ['INDIRIZZO_CLI'])),
         cap: normalizeText(pick(row, ['CAP_CLIENTE'])),
         localita: normalizeText(pick(row, ['LOCALITA_CLI'])),
@@ -270,22 +385,17 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
 
 function mergeRows(existing: AppRow[], incoming: AppRow[]) {
   const map = new Map(existing.map((row) => [row.rowId, row]));
-  incoming.forEach((row) => {
-    map.set(row.rowId, row);
-  });
+  incoming.forEach((row) => map.set(row.rowId, row));
   return Array.from(map.values()).sort((a, b) => new Date(a.dateISO || 0).getTime() - new Date(b.dateISO || 0).getTime());
+}
+function mergeMetrics<T extends { key: string }>(existing: T[], incoming: T[]) {
+  const map = new Map(existing.map((row) => [row.key, row]));
+  incoming.forEach((row) => map.set(row.key, row));
+  return Array.from(map.values());
 }
 
 function monthSeriesFromRows(rows: AppRow[], year: number) {
-  const data = MONTHS_IT.map((month, index) => ({
-    month,
-    monthShort: MONTHS_SHORT[index],
-    monthIndex: index,
-    erogato: 0,
-    pratiche: 0,
-    provvigioni: 0,
-    polizze: 0,
-  }));
+  const data = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, erogato: 0, pratiche: 0, provvigioni: 0, polizze: 0 }));
   rows.filter((row) => row.year === year).forEach((row) => {
     const bucket = data[row.month - 1];
     if (!bucket) return;
@@ -297,13 +407,29 @@ function monthSeriesFromRows(rows: AppRow[], year: number) {
   return data;
 }
 
+function productSeriesFromRows(rows: AppRow[], year: number) {
+  const series = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, AUTO: 0, POS: 0 }));
+  rows.filter((row) => row.year === year).forEach((row) => {
+    const family = getProductFamilyFromCode(row.prodottoCode);
+    if (family === 'ALTRO') return;
+    series[row.month - 1][family] += row.importoFinanziato;
+  });
+  return series;
+}
+
+function productSeriesFromMetrics(metrics: ProductMonthlyMetric[], year: number) {
+  const base = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, AUTO: 0, POS: 0 }));
+  metrics.filter((metric) => metric.year === year).forEach((metric) => {
+    base[metric.month - 1][metric.family] += metric.amount;
+  });
+  return base;
+}
+
 function aggregateByField(rows: AppRow[], year: number, field: 'dealer' | 'subagente') {
   const map = new Map<string, { name: string; erogato: number; pratiche: number; provvigioni: number; polizze: number; ticketMedio: number }>();
   rows.filter((row) => row.year === year).forEach((row) => {
     const key = row[field] || 'N/D';
-    if (!map.has(key)) {
-      map.set(key, { name: key, erogato: 0, pratiche: 0, provvigioni: 0, polizze: 0, ticketMedio: 0 });
-    }
+    if (!map.has(key)) map.set(key, { name: key, erogato: 0, pratiche: 0, provvigioni: 0, polizze: 0, ticketMedio: 0 });
     const item = map.get(key)!;
     item.erogato += row.importoFinanziato;
     item.pratiche += 1;
@@ -318,9 +444,7 @@ function productMix(rows: AppRow[], year: number) {
   const map = new Map<string, { name: string; value: number; pratiche: number }>();
   rows.filter((row) => row.year === year).forEach((row) => {
     const key = row.prodottoLabel;
-    if (!map.has(key)) {
-      map.set(key, { name: key, value: 0, pratiche: 0 });
-    }
+    if (!map.has(key)) map.set(key, { name: key, value: 0, pratiche: 0 });
     const item = map.get(key)!;
     item.value += row.importoFinanziato;
     item.pratiche += 1;
@@ -334,7 +458,6 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
   const stagionalita = settings.stagionalitaByYear?.[year] || DEFAULT_2026_STAGIONALITA;
   const currentYear = referenceDate.getFullYear();
   const currentMonth = referenceDate.getMonth();
-
   const monthlyForecast = monthly.map((item, index) => {
     const seasonality = Number(stagionalita[index] || 0);
     const stimato = target ? target * seasonality : 0;
@@ -345,25 +468,13 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
     let note = 'Futuro';
     if (year < currentYear || (year === currentYear && index < currentMonth)) note = 'Completato';
     if (year === currentYear && index === currentMonth) note = 'Mese corrente';
-    return {
-      ...item,
-      seasonality,
-      stimato,
-      workingDays,
-      workedDays,
-      mediaGg,
-      ipotetico,
-      deltaTarget: item.erogato - stimato,
-      note,
-    };
+    return { ...item, seasonality, stimato, workingDays, workedDays, mediaGg, ipotetico, deltaTarget: item.erogato - stimato, note };
   });
-
   const ytd = monthlyForecast.reduce((sum, item, index) => {
     if (year < currentYear) return sum + item.erogato;
     if (year === currentYear && index <= currentMonth) return sum + item.erogato;
     return sum;
   }, 0);
-
   const projectedAnnual = monthlyForecast.reduce((sum, item, index) => {
     if (year < currentYear) return sum + item.erogato;
     if (year > currentYear) return sum + item.stimato;
@@ -371,14 +482,7 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
     if (index === currentMonth) return sum + Math.max(item.erogato, item.ipotetico, item.stimato);
     return sum + item.stimato;
   }, 0);
-
-  return {
-    annualTarget: target,
-    projectedAnnual,
-    ytd,
-    gapToTarget: target ? projectedAnnual - target : 0,
-    monthlyForecast,
-  };
+  return { annualTarget: target, projectedAnnual, ytd, gapToTarget: target ? projectedAnnual - target : 0, monthlyForecast };
 }
 
 function KPI({ title, value, subtitle, icon: Icon }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -396,9 +500,11 @@ function KPI({ title, value, subtitle, icon: Icon }: { title: string; value: str
 
 function App() {
   const [rows, setRows] = useState<AppRow[]>([]);
+  const [productMonthlyMetrics, setProductMonthlyMetrics] = useState<ProductMonthlyMetric[]>([]);
+  const [policyMonthlyMetrics, setPolicyMonthlyMetrics] = useState<PolicyMonthlyMetric[]>([]);
   const [importedFiles, setImportedFiles] = useState<string[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [tab, setTab] = useState<'overview' | 'forecast' | 'dealers' | 'subagenti' | 'portfolio' | 'data'>('overview');
+  const [tab, setTab] = useState<'overview' | 'products' | 'forecast' | 'dealers' | 'subagenti' | 'portfolio' | 'data'>('overview');
   const [search, setSearch] = useState('');
   const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
   const [dealerFilter, setDealerFilter] = useState('ALL');
@@ -410,9 +516,17 @@ function App() {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as { rows?: AppRow[]; importedFiles?: string[]; settings?: Settings };
+      const parsed = JSON.parse(raw) as {
+        rows?: AppRow[];
+        importedFiles?: string[];
+        settings?: Settings;
+        productMonthlyMetrics?: ProductMonthlyMetric[];
+        policyMonthlyMetrics?: PolicyMonthlyMetric[];
+      };
       setRows(parsed.rows || []);
       setImportedFiles(parsed.importedFiles || []);
+      setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
+      setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
       setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
     } catch {
       // ignore broken cache
@@ -420,23 +534,20 @@ function App() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings }));
-  }, [rows, importedFiles, settings]);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }));
+  }, [rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics]);
 
   const availableYears = useMemo(() => {
-    const values = Array.from(new Set(rows.map((row) => row.year))).sort((a, b) => a - b);
+    const values = Array.from(new Set([...rows.map((row) => row.year), ...productMonthlyMetrics.map((m) => m.year), ...policyMonthlyMetrics.map((m) => m.year)])).sort((a, b) => a - b);
     return values.length ? values : [new Date().getFullYear()];
-  }, [rows]);
+  }, [rows, productMonthlyMetrics, policyMonthlyMetrics]);
 
   useEffect(() => {
-    if (!availableYears.includes(Number(yearFilter))) {
-      setYearFilter(String(availableYears[availableYears.length - 1]));
-    }
+    if (!availableYears.includes(Number(yearFilter))) setYearFilter(String(availableYears[availableYears.length - 1]));
   }, [availableYears, yearFilter]);
 
   const currentYear = Number(yearFilter);
   const yearRows = useMemo(() => rows.filter((row) => row.year === currentYear), [rows, currentYear]);
-
   const dealers = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.dealer))).sort()], [yearRows]);
   const subagenti = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.subagente))).sort()], [yearRows]);
   const products = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.prodottoCode))).sort()], [yearRows]);
@@ -453,26 +564,11 @@ function App() {
     });
   }, [rows, currentYear, dealerFilter, subagenteFilter, productFilter, search]);
 
-  const kpis = useMemo(() => {
-    const erogato = filteredRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
-    const pratiche = filteredRows.length;
-    const provvigioni = filteredRows.reduce((sum, row) => sum + row.provvigione, 0);
-    const polizze = filteredRows.reduce((sum, row) => sum + row.polizza, 0);
-    const dealerCount = new Set(filteredRows.map((row) => row.dealer)).size;
-    return {
-      erogato,
-      pratiche,
-      ticketMedio: pratiche ? erogato / pratiche : 0,
-      provvigioni,
-      polizze,
-      dealerCount,
-    };
-  }, [filteredRows]);
-
+  const hasExtraFilters = dealerFilter !== 'ALL' || subagenteFilter !== 'ALL' || productFilter !== 'ALL' || Boolean(search);
   const monthlyData = useMemo(() => monthSeriesFromRows(filteredRows, currentYear), [filteredRows, currentYear]);
   const dealerRanking = useMemo(() => aggregateByField(filteredRows, currentYear, 'dealer').slice(0, 12), [filteredRows, currentYear]);
   const subagenteRanking = useMemo(() => aggregateByField(filteredRows, currentYear, 'subagente').slice(0, 12), [filteredRows, currentYear]);
-  const dealerTable = useMemo(() => aggregateByField(filteredRows, currentYear, 'dealer'), [filteredRows, currentYear]);
+  const rawDealerTable = useMemo(() => aggregateByField(filteredRows, currentYear, 'dealer'), [filteredRows, currentYear]);
   const subagenteTable = useMemo(() => aggregateByField(filteredRows, currentYear, 'subagente'), [filteredRows, currentYear]);
   const mix = useMemo(() => productMix(filteredRows, currentYear), [filteredRows, currentYear]);
   const forecast = useMemo(() => buildForecast(filteredRows, currentYear, settings, new Date()), [filteredRows, currentYear, settings]);
@@ -482,26 +578,68 @@ function App() {
     if (!availableYears.includes(previous)) return [] as Record<string, number | string>[];
     const currentData = monthSeriesFromRows(rows, currentYear);
     const previousData = monthSeriesFromRows(rows, previous);
-    return currentData.map((row, index) => ({
-      month: row.monthShort,
-      [currentYear]: row.erogato,
-      [previous]: previousData[index]?.erogato || 0,
-    }));
+    return currentData.map((row, index) => ({ month: row.monthShort, [currentYear]: row.erogato, [previous]: previousData[index]?.erogato || 0 }));
   }, [rows, currentYear, availableYears]);
+
+  const policyTotalsForYear = useMemo(() => {
+    const totals = new Map<number, number>();
+    policyMonthlyMetrics.filter((m) => m.year === currentYear && m.dealer === '__TOTAL__').forEach((m) => totals.set(m.month, m.amount));
+    return totals;
+  }, [policyMonthlyMetrics, currentYear]);
+  const dealerPolicyTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    policyMonthlyMetrics.filter((m) => m.year === currentYear && m.dealer !== '__TOTAL__').forEach((m) => totals.set(m.dealer, (totals.get(m.dealer) || 0) + m.amount));
+    return totals;
+  }, [policyMonthlyMetrics, currentYear]);
+
+  const productMonthlySeries = useMemo(() => {
+    if (!hasExtraFilters) {
+      const fromMetrics = productSeriesFromMetrics(productMonthlyMetrics, currentYear);
+      const hasValues = fromMetrics.some((row) => row.AUTO > 0 || row.POS > 0);
+      if (hasValues) return fromMetrics;
+    }
+    return productSeriesFromRows(filteredRows, currentYear);
+  }, [hasExtraFilters, productMonthlyMetrics, filteredRows, currentYear]);
+
+  const kpis = useMemo(() => {
+    const erogato = filteredRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
+    const pratiche = filteredRows.length;
+    const provvigioni = filteredRows.reduce((sum, row) => sum + row.provvigione, 0);
+    let polizze = filteredRows.reduce((sum, row) => sum + row.polizza, 0);
+    if (subagenteFilter === 'ALL' && productFilter === 'ALL' && !search) {
+      if (dealerFilter === 'ALL' && policyTotalsForYear.size > 0) {
+        polizze = Array.from(policyTotalsForYear.values()).reduce((sum, value) => sum + value, 0);
+      } else if (dealerFilter !== 'ALL' && dealerPolicyTotals.has(dealerFilter)) {
+        polizze = dealerPolicyTotals.get(dealerFilter) || 0;
+      }
+    }
+    const dealerCount = new Set(filteredRows.map((row) => row.dealer)).size;
+    return { erogato, pratiche, ticketMedio: pratiche ? erogato / pratiche : 0, provvigioni, polizze, dealerCount };
+  }, [filteredRows, dealerFilter, subagenteFilter, productFilter, search, policyTotalsForYear, dealerPolicyTotals]);
+
+  const dealerTable = useMemo(() => {
+    return rawDealerTable.map((row) => ({ ...row, polizze: subagenteFilter === 'ALL' && productFilter === 'ALL' && !search && dealerPolicyTotals.has(row.name) ? (dealerPolicyTotals.get(row.name) || 0) : row.polizze }));
+  }, [rawDealerTable, subagenteFilter, productFilter, search, dealerPolicyTotals]);
 
   async function handleFiles(fileList: FileList | null) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
     setUploading(true);
     try {
-      let imported: AppRow[] = [];
+      let importedRows: AppRow[] = [];
+      let importedProducts: ProductMonthlyMetric[] = [];
+      let importedPolicies: PolicyMonthlyMetric[] = [];
       const fileNames: string[] = [];
       for (const file of files) {
         const parsed = await readWorkbookFile(file);
-        imported = imported.concat(normalizeImportedRows(parsed.rows, parsed.fileName));
+        importedRows = importedRows.concat(normalizeImportedRows(parsed.rows, parsed.fileName));
+        importedProducts = importedProducts.concat(parsed.productMonthly);
+        importedPolicies = importedPolicies.concat(parsed.policyMonthly);
         fileNames.push(parsed.fileName);
       }
-      setRows((previous) => mergeRows(previous, imported));
+      setRows((previous) => mergeRows(previous, importedRows));
+      setProductMonthlyMetrics((previous) => mergeMetrics(previous, importedProducts));
+      setPolicyMonthlyMetrics((previous) => mergeMetrics(previous, importedPolicies));
       setImportedFiles((previous) => Array.from(new Set([...previous, ...fileNames])));
     } finally {
       setUploading(false);
@@ -511,12 +649,14 @@ function App() {
   function clearArchive() {
     setRows([]);
     setImportedFiles([]);
+    setProductMonthlyMetrics([]);
+    setPolicyMonthlyMetrics([]);
     setSettings(DEFAULT_SETTINGS);
     window.localStorage.removeItem(STORAGE_KEY);
   }
 
   function exportBackup() {
-    const blob = new Blob([JSON.stringify({ rows, importedFiles, settings }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -529,10 +669,18 @@ function App() {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
-        const parsed = JSON.parse(String(e.target?.result || '{}')) as { rows?: AppRow[]; importedFiles?: string[]; settings?: Settings };
+        const parsed = JSON.parse(String(e.target?.result || '{}')) as {
+          rows?: AppRow[];
+          importedFiles?: string[];
+          settings?: Settings;
+          productMonthlyMetrics?: ProductMonthlyMetric[];
+          policyMonthlyMetrics?: PolicyMonthlyMetric[];
+        };
         setRows(parsed.rows || []);
         setImportedFiles(parsed.importedFiles || []);
         setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
+        setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
+        setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
       } catch {
         window.alert('Backup non valido');
       }
@@ -541,7 +689,11 @@ function App() {
   }
 
   const progress = forecast.annualTarget ? Math.min((forecast.projectedAnnual / forecast.annualTarget) * 100, 100) : 0;
-  const januaryCard = monthlyData[0];
+  const now = new Date();
+  const fallbackCurrentMonth = [...monthlyData].reverse().find((row) => row.erogato > 0)?.monthIndex || 1;
+  const currentMonthIndex = currentYear === now.getFullYear() ? now.getMonth() + 1 : fallbackCurrentMonth;
+  const currentMonthCard = monthlyData[currentMonthIndex - 1];
+  const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
 
   return (
     <div className="app-shell">
@@ -549,7 +701,7 @@ function App() {
         <header className="hero">
           <div>
             <h1>Dealer Erogato App</h1>
-            <p>Versione corretta con data di liquidazione, polizze da colonna dedicata, filtro filiale/subagente e gestione import multipli senza perdere gennaio.</p>
+            <p>Dashboard per erogato, forecast, dealer, filiali e prodotto. La data di riferimento è sempre <strong>DATA_LIQUIDAZIONE</strong>.</p>
           </div>
           <div className="hero-actions">
             <label className="action-button primary">
@@ -573,15 +725,15 @@ function App() {
             <div>
               <div className="banner-title">Archivio locale</div>
               <div className="banner-value">{num(rows.length)} pratiche</div>
-              <div className="banner-text">I file si importano direttamente dall'export banca. Non devi più aggiornare manualmente l'Excel storico.</div>
+              <div className="banner-text">Carichi direttamente l'export banca o il tuo report Excel. Lo storico si aggiorna senza rifare ogni volta il file annuale.</div>
             </div>
           </div>
           <div className="banner-card success">
             <Target className="icon large" />
             <div>
-              <div className="banner-title">Gennaio {currentYear}</div>
-              <div className="banner-value">{januaryCard ? euro(januaryCard.erogato) : '-'}</div>
-              <div className="banner-text">Valore calcolato usando sempre <strong>DATA_LIQUIDAZIONE</strong>.</div>
+              <div className="banner-title">Erogato {currentMonthLabel} {currentYear}</div>
+              <div className="banner-value">{currentMonthCard ? euro(currentMonthCard.erogato) : '-'}</div>
+              <div className="banner-text">Il banner si aggiorna automaticamente sul mese corrente dell'anno selezionato.</div>
             </div>
           </div>
         </section>
@@ -605,8 +757,8 @@ function App() {
         <section className="kpi-grid">
           <KPI title="Erogato" value={euro0(kpis.erogato)} subtitle={`${num(kpis.pratiche)} pratiche`} icon={Euro} />
           <KPI title="Ticket medio" value={euro0(kpis.ticketMedio)} subtitle="Importo medio pratica" icon={TrendingUp} />
-          <KPI title="Provvigioni" value={euro(kpis.provvigioni)} subtitle="PROVV oppure formula automatica" icon={Wallet} />
-          <KPI title="Polizze" value={euro(kpis.polizze)} subtitle="Da importo polizza" icon={ShieldCheck} />
+          <KPI title="Provvigioni" value={euro(kpis.provvigioni)} subtitle="PROVV o formula automatica" icon={Wallet} />
+          <KPI title="Polizze" value={euro(kpis.polizze)} subtitle="Dal report polizze / fallback database" icon={ShieldCheck} />
           <KPI title="Dealer attivi" value={num(kpis.dealerCount)} subtitle="Nel filtro corrente" icon={Users} />
           <KPI title="Forecast anno" value={euro0(forecast.projectedAnnual)} subtitle={forecast.annualTarget ? `Target ${euro0(forecast.annualTarget)}` : 'Target non impostato'} icon={Target} />
         </section>
@@ -614,6 +766,7 @@ function App() {
         <nav className="tabs">
           {[
             ['overview', 'Overview'],
+            ['products', 'Prodotti'],
             ['forecast', 'Previsione'],
             ['dealers', 'Dealer'],
             ['subagenti', 'Filiali'],
@@ -642,6 +795,33 @@ function App() {
                 <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparisonYears}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(currentYear - 1)} strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(currentYear)} strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
               </div>
             )}
+          </div>
+        )}
+
+        {tab === 'products' && (
+          <div className="stack">
+            <div className="panel">
+              <div className="panel-header"><h3>Erogato per prodotto mese per mese</h3><span>Vista POS / AUTO</span></div>
+              <div className="chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={productMonthlySeries}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="monthShort" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" radius={[8, 8, 0, 0]} /><Bar dataKey="POS" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer></div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Dettaglio prodotto</h3><span>Totali mensili AUTO e POS</span></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Mese</th><th className="right">AUTO</th><th className="right">POS</th><th className="right">Totale</th></tr></thead>
+                  <tbody>
+                    {productMonthlySeries.map((row) => (
+                      <tr key={row.month}>
+                        <td>{row.month}</td>
+                        <td className="right">{euro(row.AUTO)}</td>
+                        <td className="right">{euro(row.POS)}</td>
+                        <td className="right">{euro(row.AUTO + row.POS)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         )}
 
@@ -817,15 +997,11 @@ function App() {
                 {MONTHS_IT.map((month, index) => (
                   <div key={month}>
                     <div className="month-label">{month}</div>
-                    <input
-                      className="input"
-                      value={settings.stagionalitaByYear?.[currentYear]?.[index] ?? ''}
-                      onChange={(e) => {
-                        const copy = [...(settings.stagionalitaByYear?.[currentYear] || Array(12).fill(0))];
-                        copy[index] = Number(e.target.value || 0);
-                        setSettings((prev) => ({ ...prev, stagionalitaByYear: { ...prev.stagionalitaByYear, [currentYear]: copy } }));
-                      }}
-                    />
+                    <input className="input" value={settings.stagionalitaByYear?.[currentYear]?.[index] ?? ''} onChange={(e) => {
+                      const copy = [...(settings.stagionalitaByYear?.[currentYear] || Array(12).fill(0))];
+                      copy[index] = Number(e.target.value || 0);
+                      setSettings((prev) => ({ ...prev, stagionalitaByYear: { ...prev.stagionalitaByYear, [currentYear]: copy } }));
+                    }} />
                   </div>
                 ))}
               </div>
@@ -837,9 +1013,9 @@ function App() {
                 <div>• erogato: <strong>IMPORTO_FINANZIATO</strong></div>
                 <div>• dealer: <strong>DES_CONVENZIONATO</strong></div>
                 <div>• filiale: <strong>DES_SUBAGENTE</strong></div>
-                <div>• polizze: <strong>importo polizza</strong></div>
+                <div>• polizze: <strong>REPORT POLIZZE</strong> quando presente, altrimenti colonna database</div>
+                <div>• vista prodotto: <strong>EROGATO PER PRODOTTO</strong> quando presente, altrimenti classificazione da codice prodotto</div>
                 <div>• provvigioni: <strong>PROVV</strong> oppure formula automatica (31 = 0,825%; resto = 0,55%)</div>
-                <div>• deduplica robusta tra import successivi, senza eliminare i duplicati reali già presenti nel file</div>
               </div>
             </div>
           </div>
@@ -852,5 +1028,5 @@ function App() {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
-  </React.StrictMode>
+  </React.StrictMode>,
 );

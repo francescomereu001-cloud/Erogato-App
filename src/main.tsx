@@ -95,6 +95,9 @@ type WorkbookImport = {
   policyMonthly: PolicyMonthlyMetric[];
 };
 
+type ViewGranularity = 'monthly' | 'weekly' | 'daily';
+type DataSourceMode = 'supabase' | 'local' | 'empty';
+
 const STORAGE_KEY = 'dealer_erogato_app_v8b';
 const MONTHS_IT = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
 const MONTHS_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
@@ -409,6 +412,94 @@ function monthSeriesFromRows(rows: AppRow[], year: number) {
   return data;
 }
 
+
+function startOfWeek(dateISO: string) {
+  const date = new Date(dateISO);
+  const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0);
+  const day = copy.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  copy.setDate(copy.getDate() + diff);
+  return copy;
+}
+
+function endOfWeek(dateISO: string) {
+  const start = startOfWeek(dateISO);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return end;
+}
+
+function formatDateLabel(dateISO: string) {
+  return new Date(dateISO).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
+}
+
+function formatWeekLabel(dateISO: string) {
+  const start = startOfWeek(dateISO);
+  const end = endOfWeek(dateISO);
+  return `${start.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' })} - ${end.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' })}`;
+}
+
+function getWeeklyKey(dateISO: string) {
+  const start = startOfWeek(dateISO);
+  return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+}
+
+function getDailyKey(dateISO: string) {
+  return dateISO.slice(0, 10);
+}
+
+function timeSeriesFromRows(rows: AppRow[], year: number, granularity: ViewGranularity) {
+  if (granularity === 'monthly') {
+    return monthSeriesFromRows(rows, year).map((row) => ({
+      key: `${year}-${String(row.monthIndex).padStart(2, '0')}`,
+      label: row.monthShort,
+      fullLabel: row.month,
+      monthIndex: row.monthIndex,
+      erogato: row.erogato,
+      pratiche: row.pratiche,
+      provvigioni: row.provvigioni,
+      polizze: row.polizze,
+    }));
+  }
+
+  const map = new Map<string, { key: string; label: string; fullLabel: string; erogato: number; pratiche: number; provvigioni: number; polizze: number; sortValue: number }>();
+  rows.filter((row) => row.year === year && row.dateISO).forEach((row) => {
+    const key = granularity === 'weekly' ? getWeeklyKey(row.dateISO!) : getDailyKey(row.dateISO!);
+    const label = granularity === 'weekly' ? formatWeekLabel(row.dateISO!) : formatDateLabel(row.dateISO!);
+    const fullLabel = granularity === 'weekly'
+      ? `Settimana ${formatWeekLabel(row.dateISO!)}`
+      : new Date(row.dateISO!).toLocaleDateString('it-IT', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        label,
+        fullLabel,
+        erogato: 0,
+        pratiche: 0,
+        provvigioni: 0,
+        polizze: 0,
+        sortValue: new Date(key).getTime(),
+      });
+    }
+
+    const bucket = map.get(key)!;
+    bucket.erogato += row.importoFinanziato;
+    bucket.pratiche += 1;
+    bucket.provvigioni += row.provvigione;
+    bucket.polizze += row.polizza;
+  });
+
+  return Array.from(map.values()).sort((a, b) => a.sortValue - b.sortValue);
+}
+
+function rowMatchesPeriod(row: AppRow, granularity: ViewGranularity, periodKey: string) {
+  if (!row.dateISO) return false;
+  if (granularity === 'monthly') return row.month === Number(periodKey);
+  if (granularity === 'weekly') return getWeeklyKey(row.dateISO) === periodKey;
+  return getDailyKey(row.dateISO) === periodKey;
+}
+
 function productSeriesFromRows(rows: AppRow[], year: number) {
   const series = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, AUTO: 0, POS: 0 }));
   rows.filter((row) => row.year === year).forEach((row) => {
@@ -513,43 +604,104 @@ function App() {
   const [subagenteFilter, setSubagenteFilter] = useState('ALL');
   const [productFilter, setProductFilter] = useState('ALL');
   const [uploading, setUploading] = useState(false);
+  const [dataSourceMode, setDataSourceMode] = useState<DataSourceMode>('empty');
+  const [viewGranularity, setViewGranularity] = useState<ViewGranularity>('monthly');
+  const [selectedPeriodKey, setSelectedPeriodKey] = useState('');
 
 useEffect(() => {
   const loadData = async () => {
-    const { data, error } = await supabase
-      .from("pratiche")
-      .select("*")
-      .order("data_liquidazione", { ascending: true });
+    try {
+      const { data, error } = await supabase
+        .from('pratiche')
+        .select('*')
+        .order('data_liquidazione', { ascending: true });
 
-    if (!error && data) {
-      const mapped = data.map((r) => ({
-        appId: r.id,
-        uniqueKey: r.unique_key,
-        sourceFile: r.source_file || "",
-        dealer: r.dealer || "N/D",
-        subagente: r.subagente || "N/D",
-        cliente: r.cliente || "N/D",
-        codiceFiscale: r.codice_fiscale || "",
-        tabella: r.tabella || "",
-        numeroRate: Number(r.numero_rate || 0),
-        importoRata: Number(r.importo_rata || 0),
-        importoFinanziato: Number(r.importo_finanziato || 0),
-        provvigione: Number(r.provvigione || 0),
-        polizza: Number(r.polizza || 0),
-        prodottoCode: String(r.prodotto || ""),
-        prodottoLabel: String(r.prodotto || ""),
-        year: r.data_liquidazione
-          ? new Date(r.data_liquidazione).getFullYear()
-          : null,
-        month: r.data_liquidazione
-          ? new Date(r.data_liquidazione).getMonth() + 1
-          : null,
-        dateISO: r.data_liquidazione
-          ? new Date(r.data_liquidazione).toISOString()
-          : null,
-      }));
+      if (error) {
+        throw error;
+      }
 
-      setRows(mapped);
+      if (data && data.length > 0) {
+        const mapped: AppRow[] = data
+          .map((r: Record<string, unknown>) => {
+            const dateValue = typeof r.data_liquidazione === 'string' ? r.data_liquidazione : null;
+            const baseDate = dateValue ? new Date(`${dateValue}T12:00:00`) : null;
+            const dateISO = baseDate && !Number.isNaN(baseDate.getTime()) ? baseDate.toISOString() : null;
+            const prodottoCode = normalizeText(r.prodotto);
+
+            const stableIdentity = normalizeText(r.unique_key) || [
+              safeUpper(r.dealer),
+              safeUpper(r.cliente),
+              safeUpper(r.codice_fiscale),
+              prodottoCode,
+              cleanNumber(r.importo_finanziato).toFixed(2),
+              cleanNumber(r.numero_rate).toString(),
+              dateValue || '',
+            ].join('|');
+
+            return {
+              rowId: stableIdentity,
+              stableIdentity,
+              sourceFile: normalizeText(r.source_file),
+              convenzionato: normalizeText(r.dealer),
+              dealer: normalizeText(r.dealer) || 'N/D',
+              subagente: normalizeText(r.subagente) || 'N/D',
+              agente: '',
+              situazione: '',
+              cliente: normalizeText(r.cliente) || 'N/D',
+              codiceFiscale: normalizeText(r.codice_fiscale),
+              prodottoCode,
+              prodottoLabel: normalizeProductLabel(prodottoCode),
+              tabella: normalizeText(r.tabella),
+              numeroRate: cleanNumber(r.numero_rate),
+              importoRata: cleanNumber(r.importo_rata),
+              importoFinanziato: cleanNumber(r.importo_finanziato),
+              importoNettoErogato: cleanNumber(r.importo_finanziato),
+              dataCaricamento: null,
+              dataLiquidazione: dateISO,
+              indirizzo: '',
+              cap: '',
+              localita: '',
+              provincia: '',
+              provvigione: cleanNumber(r.provvigione),
+              polizza: cleanNumber(r.polizza),
+              year: baseDate ? baseDate.getFullYear() : 0,
+              month: baseDate ? baseDate.getMonth() + 1 : 0,
+              dateISO,
+            };
+          })
+          .filter((row) => row.year > 0);
+
+        setRows(mapped);
+        setImportedFiles(Array.from(new Set(mapped.map((row) => row.sourceFile).filter(Boolean))));
+        setDataSourceMode('supabase');
+        return;
+      }
+    } catch (error) {
+      console.error('Errore caricamento Supabase:', error);
+    }
+
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        setDataSourceMode('empty');
+        return;
+      }
+      const parsed = JSON.parse(raw) as {
+        rows?: AppRow[];
+        importedFiles?: string[];
+        settings?: Settings;
+        productMonthlyMetrics?: ProductMonthlyMetric[];
+        policyMonthlyMetrics?: PolicyMonthlyMetric[];
+      };
+      setRows(parsed.rows || []);
+      setImportedFiles(parsed.importedFiles || []);
+      setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
+      setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
+      setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
+      setDataSourceMode((parsed.rows || []).length ? 'local' : 'empty');
+    } catch (error) {
+      console.error('Errore lettura archivio locale:', error);
+      setDataSourceMode('empty');
     }
   };
 
@@ -589,6 +741,7 @@ useEffect(() => {
 
   const hasExtraFilters = dealerFilter !== 'ALL' || subagenteFilter !== 'ALL' || productFilter !== 'ALL' || Boolean(search);
   const monthlyData = useMemo(() => monthSeriesFromRows(filteredRows, currentYear), [filteredRows, currentYear]);
+  const timeSeriesData = useMemo(() => timeSeriesFromRows(filteredRows, currentYear, viewGranularity), [filteredRows, currentYear, viewGranularity]);
   const dealerRanking = useMemo(() => aggregateByField(filteredRows, currentYear, 'dealer').slice(0, 12), [filteredRows, currentYear]);
   const subagenteRanking = useMemo(() => aggregateByField(filteredRows, currentYear, 'subagente').slice(0, 12), [filteredRows, currentYear]);
   const rawDealerTable = useMemo(() => aggregateByField(filteredRows, currentYear, 'dealer'), [filteredRows, currentYear]);
@@ -603,6 +756,41 @@ useEffect(() => {
     const previousData = monthSeriesFromRows(rows, previous);
     return currentData.map((row, index) => ({ month: row.monthShort, [currentYear]: row.erogato, [previous]: previousData[index]?.erogato || 0 }));
   }, [rows, currentYear, availableYears]);
+
+  useEffect(() => {
+    if (!timeSeriesData.length) {
+      setSelectedPeriodKey('');
+      return;
+    }
+    const hasCurrent = timeSeriesData.some((row) => row.key === selectedPeriodKey);
+    if (!hasCurrent) {
+      setSelectedPeriodKey(viewGranularity === 'monthly' ? String(timeSeriesData[timeSeriesData.length - 1].monthIndex) : timeSeriesData[timeSeriesData.length - 1].key);
+    }
+  }, [timeSeriesData, selectedPeriodKey, viewGranularity]);
+
+  const selectedPeriodRows = useMemo(() => {
+    if (!selectedPeriodKey) return [];
+    return [...filteredRows]
+      .filter((row) => rowMatchesPeriod(row, viewGranularity, selectedPeriodKey))
+      .sort((a, b) => new Date(b.dateISO || 0).getTime() - new Date(a.dateISO || 0).getTime());
+  }, [filteredRows, viewGranularity, selectedPeriodKey]);
+
+  const selectedPeriodSummary = useMemo(() => {
+    if (!selectedPeriodRows.length) return null;
+    return {
+      erogato: selectedPeriodRows.reduce((sum, row) => sum + row.importoFinanziato, 0),
+      pratiche: selectedPeriodRows.length,
+      provvigioni: selectedPeriodRows.reduce((sum, row) => sum + row.provvigione, 0),
+      polizze: selectedPeriodRows.reduce((sum, row) => sum + row.polizza, 0),
+    };
+  }, [selectedPeriodRows]);
+
+  const selectedPeriodMeta = useMemo(() => {
+    return timeSeriesData.find((row) => (viewGranularity === 'monthly' ? String(row.monthIndex) : row.key) === selectedPeriodKey) || null;
+  }, [timeSeriesData, selectedPeriodKey, viewGranularity]);
+
+  const periodLabel = viewGranularity === 'monthly' ? 'mese' : viewGranularity === 'weekly' ? 'settimana' : 'giorno';
+  const chartTitle = viewGranularity === 'monthly' ? 'Erogato mese per mese' : viewGranularity === 'weekly' ? 'Erogato settimana per settimana' : 'Erogato giorno per giorno';
 
   const policyTotalsForYear = useMemo(() => {
     const totals = new Map<number, number>();
@@ -673,6 +861,7 @@ useEffect(() => {
     setProductMonthlyMetrics((previous) => mergeMetrics(previous, importedProducts));
     setPolicyMonthlyMetrics((previous) => mergeMetrics(previous, importedPolicies));
     setImportedFiles((previous) => Array.from(new Set([...previous, ...fileNames])));
+    setDataSourceMode('supabase');
 
     const payload = importedRows.map((row) => ({
       unique_key: row.uniqueKey,
@@ -713,6 +902,7 @@ useEffect(() => {
     setPolicyMonthlyMetrics([]);
     setSettings(DEFAULT_SETTINGS);
     window.localStorage.removeItem(STORAGE_KEY);
+    setDataSourceMode('empty');
   }
 
   function exportBackup() {
@@ -741,6 +931,7 @@ useEffect(() => {
         setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
         setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
         setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
+        setDataSourceMode((parsed.rows || []).length ? 'local' : 'empty');
       } catch {
         window.alert('Backup non valido');
       }
@@ -783,9 +974,13 @@ useEffect(() => {
           <div className="banner-card info">
             <Database className="icon large" />
             <div>
-              <div className="banner-title">Archivio locale</div>
+              <div className="banner-title">{dataSourceMode === 'supabase' ? 'Archivio database' : dataSourceMode === 'local' ? 'Archivio locale' : 'Archivio'}</div>
               <div className="banner-value">{num(rows.length)} pratiche</div>
-              <div className="banner-text">Carichi direttamente l'export banca o il tuo report Excel. Lo storico si aggiorna senza rifare ogni volta il file annuale.</div>
+              <div className="banner-text">{dataSourceMode === 'supabase'
+                ? 'I dati vengono letti da Supabase e si aggiornano a ogni nuovo caricamento.'
+                : dataSourceMode === 'local'
+                  ? 'Fallback locale attivo. Carica o importa un backup se il database non è disponibile.'
+                  : 'Nessun dato disponibile. Carica un export Excel o importa un backup.'}</div>
             </div>
           </div>
           <div className="banner-card success">
@@ -809,6 +1004,11 @@ useEffect(() => {
               <select className="select" value={dealerFilter} onChange={(e) => setDealerFilter(e.target.value)}>{dealers.map((dealer) => <option key={dealer} value={dealer}>{dealer === 'ALL' ? 'Tutti i dealer' : dealer}</option>)}</select>
               <select className="select" value={subagenteFilter} onChange={(e) => setSubagenteFilter(e.target.value)}>{subagenti.map((sub) => <option key={sub} value={sub}>{sub === 'ALL' ? 'Tutte le filiali' : sub}</option>)}</select>
               <select className="select" value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>{products.map((product) => <option key={product} value={product}>{product === 'ALL' ? 'Tutti i prodotti' : product}</option>)}</select>
+              <select className="select" value={viewGranularity} onChange={(e) => setViewGranularity(e.target.value as ViewGranularity)}>
+                <option value="monthly">Vista mensile</option>
+                <option value="weekly">Vista settimanale</option>
+                <option value="daily">Vista giornaliera</option>
+              </select>
             </div>
           </div>
           {importedFiles.length > 0 && <div className="imported-files">File importati: {importedFiles.join(', ')}</div>}
@@ -841,15 +1041,61 @@ useEffect(() => {
           <div className="stack">
             <div className="panel-grid two-one">
               <div className="panel">
-                <div className="panel-header"><h3>Erogato mese per mese</h3><span>Importo finanziato per data liquidazione</span></div>
-                <div className="chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={monthlyData}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="monthShort" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Bar dataKey="erogato" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer></div>
+                <div className="panel-header"><h3>{chartTitle}</h3><span>Importo finanziato per data liquidazione</span></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={timeSeriesData}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" interval="preserveStartEnd" angle={viewGranularity === 'daily' ? -35 : 0} textAnchor={viewGranularity === 'daily' ? 'end' : 'middle'} height={viewGranularity === 'daily' ? 70 : 30} /><YAxis /><Tooltip formatter={(value: number) => euro(value)} labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ''} /><Bar dataKey="erogato" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer></div>
               </div>
               <div className="panel">
                 <div className="panel-header"><h3>Mix prodotto</h3><span>Ripartizione per prodotto</span></div>
                 <div className="chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={mix} dataKey="value" nameKey="name" outerRadius={90} label /><Tooltip formatter={(value: number) => euro(value)} /></PieChart></ResponsiveContainer></div>
               </div>
             </div>
-            {comparisonYears.length > 0 && (
+
+            <div className="panel">
+              <div className="panel-header">
+                <h3>Dettaglio pratiche per {periodLabel}</h3>
+                <span>Seleziona il {periodLabel} da analizzare e vedi le pratiche erogate</span>
+              </div>
+              <div className="filters-grid period-grid">
+                <select className="select" value={selectedPeriodKey} onChange={(e) => setSelectedPeriodKey(e.target.value)}>
+                  {timeSeriesData.map((item) => (
+                    <option key={item.key} value={viewGranularity === 'monthly' ? String(item.monthIndex) : item.key}>{item.fullLabel}</option>
+                  ))}
+                </select>
+                <div className="readonly">{selectedPeriodSummary ? `${num(selectedPeriodSummary.pratiche)} pratiche` : 'Nessuna pratica'}</div>
+                <div className="readonly">{selectedPeriodSummary ? euro(selectedPeriodSummary.erogato) : '-'}</div>
+                <div className="readonly">{selectedPeriodSummary ? euro(selectedPeriodSummary.provvigioni) : '-'}</div>
+              </div>
+              <div className="period-summary muted">{selectedPeriodMeta ? `Periodo selezionato: ${selectedPeriodMeta.fullLabel}` : `Nessun ${periodLabel} disponibile nel filtro corrente.`}</div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th>Tabella</th><th className="right">Importo</th><th className="right">Provv.</th><th className="right">Polizza</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedPeriodRows.map((row) => (
+                      <tr key={row.rowId}>
+                        <td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td>
+                        <td>{row.dealer}</td>
+                        <td>{row.subagente}</td>
+                        <td>{row.cliente}</td>
+                        <td>{row.prodottoCode}</td>
+                        <td>{row.tabella || '-'}</td>
+                        <td className="right">{euro(row.importoFinanziato)}</td>
+                        <td className="right">{euro(row.provvigione)}</td>
+                        <td className="right">{euro(row.polizza)}</td>
+                      </tr>
+                    ))}
+                    {!selectedPeriodRows.length && (
+                      <tr><td colSpan={9}>Nessuna pratica per il {periodLabel} selezionato.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {comparisonYears.length > 0 && viewGranularity === 'monthly' && (
               <div className="panel">
                 <div className="panel-header"><h3>Confronto anno su anno</h3><span>{currentYear - 1} vs {currentYear}</span></div>
                 <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparisonYears}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(currentYear - 1)} strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(currentYear)} strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
@@ -1090,3 +1336,4 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <App />
   </React.StrictMode>,
 );
+

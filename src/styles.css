@@ -90,7 +90,7 @@ button, input, select { font: inherit; }
   color: var(--text);
 }
 .input.search { padding-left: 42px; }
-.filters-grid { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: 10px; }
+.filters-grid { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); gap: 10px; }
 .imported-files { margin-top: 12px; color: var(--muted); font-size: 12px; }
 
 .kpi-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; margin-bottom: 18px; }
@@ -192,3 +192,7 @@ tr:last-child td { border-bottom: none; }
   .filters-grid, .settings-grid, .months-grid { grid-template-columns: 1fr; }
   .mini-grid.four { grid-template-columns: 1fr; }
 }
+
+.period-grid { margin-bottom: 12px; }
+.period-summary { margin-bottom: 14px; }
+

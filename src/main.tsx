@@ -32,7 +32,7 @@ import {
   Boxes,
 } from 'lucide-react';
 import './styles.css';
-
+import { supabase } from "./supabase";
 type SourceRow = Record<string, unknown>;
 
 type AppRow = {
@@ -514,27 +514,48 @@ function App() {
   const [productFilter, setProductFilter] = useState('ALL');
   const [uploading, setUploading] = useState(false);
 
-  useEffect(() => {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as {
-        rows?: AppRow[];
-        importedFiles?: string[];
-        settings?: Settings;
-        productMonthlyMetrics?: ProductMonthlyMetric[];
-        policyMonthlyMetrics?: PolicyMonthlyMetric[];
-      };
-      setRows(parsed.rows || []);
-      setImportedFiles(parsed.importedFiles || []);
-      setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
-      setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
-      setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
-    } catch {
-      // ignore broken cache
-    }
-  }, []);
+useEffect(() => {
+  const loadData = async () => {
+    const { data, error } = await supabase
+      .from("pratiche")
+      .select("*")
+      .order("data_liquidazione", { ascending: true });
 
+    if (!error && data) {
+      const mapped = data.map((r) => ({
+        appId: r.id,
+        uniqueKey: r.unique_key,
+        sourceFile: r.source_file || "",
+        dealer: r.dealer || "N/D",
+        subagente: r.subagente || "N/D",
+        cliente: r.cliente || "N/D",
+        codiceFiscale: r.codice_fiscale || "",
+        tabella: r.tabella || "",
+        numeroRate: Number(r.numero_rate || 0),
+        importoRata: Number(r.importo_rata || 0),
+        importoFinanziato: Number(r.importo_finanziato || 0),
+        provvigione: Number(r.provvigione || 0),
+        polizza: Number(r.polizza || 0),
+        prodottoCode: String(r.prodotto || ""),
+        prodottoLabel: String(r.prodotto || ""),
+        year: r.data_liquidazione
+          ? new Date(r.data_liquidazione).getFullYear()
+          : null,
+        month: r.data_liquidazione
+          ? new Date(r.data_liquidazione).getMonth() + 1
+          : null,
+        dateISO: r.data_liquidazione
+          ? new Date(r.data_liquidazione).toISOString()
+          : null,
+      }));
+
+      setRows(mapped);
+    }
+  };
+
+  loadData();
+}, []);
+      
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }));
   }, [rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics]);

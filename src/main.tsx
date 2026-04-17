@@ -650,58 +650,61 @@ useEffect(() => {
     return rawDealerTable.map((row) => ({ ...row, polizze: subagenteFilter === 'ALL' && productFilter === 'ALL' && !search && dealerPolicyTotals.has(row.name) ? (dealerPolicyTotals.get(row.name) || 0) : row.polizze }));
   }, [rawDealerTable, subagenteFilter, productFilter, search, dealerPolicyTotals]);
 
-  async function handleFiles(fileList: FileList | null) {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-    setUploading(true);
-    try {
-      let importedRows: AppRow[] = [];
-      let importedProducts: ProductMonthlyMetric[] = [];
-      let importedPolicies: PolicyMonthlyMetric[] = [];
-      const fileNames: string[] = [];
-      for (const file of files) {
-        const parsed = await readWorkbookFile(file);
-        importedRows = importedRows.concat(normalizeImportedRows(parsed.rows, parsed.fileName));
-        importedProducts = importedProducts.concat(parsed.productMonthly);
-        importedPolicies = importedPolicies.concat(parsed.policyMonthly);
-        fileNames.push(parsed.fileName);
-      }
-      setRows((previous) => mergeRows(previous, importedRows));
-      setProductMonthlyMetrics((previous) => mergeMetrics(previous, importedProducts));
-      setPolicyMonthlyMetrics((previous) => mergeMetrics(previous, importedPolicies));
-      setImportedFiles((previous) => Array.from(new Set([...previous, ...fileNames])));
-      await supabase.from('pratiche').insert(
-const payload = importedRows.map((row) => ({
-  unique_key: row.uniqueKey,
-  data_liquidazione: row.dateISO
-    ? new Date(row.dateISO).toISOString().slice(0, 10)
-    : null,
-  importo_finanziato: row.importoFinanziato,
-  prodotto: Number(row.prodottoCode),
-  dealer: row.dealer,
-  subagente: row.subagente,
-  provvigione: row.provvigione,
-  polizza: row.polizza,
-  cliente: row.cliente,
-  codice_fiscale: row.codiceFiscale,
-  tabella: row.tabella,
-  numero_rate: row.numeroRate,
-  importo_rata: row.importoRata,
-  source_file: row.sourceFile
-}));
+ async function handleFiles(fileList: FileList | null) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  setUploading(true);
 
-const { error } = await supabase
-  .from("pratiche")
-  .upsert(payload, { onConflict: "unique_key" });
+  try {
+    let importedRows: AppRow[] = [];
+    let importedProducts: ProductMonthlyMetric[] = [];
+    let importedPolicies: PolicyMonthlyMetric[] = [];
+    const fileNames: string[] = [];
 
-if (error) {
-  console.error("Errore Supabase:", error);
-  alert("Errore nel salvataggio su Supabase");
-}
-    } finally {
-      setUploading(false);
+    for (const file of files) {
+      const parsed = await readWorkbookFile(file);
+      importedRows = importedRows.concat(normalizeImportedRows(parsed.rows, parsed.fileName));
+      importedProducts = importedProducts.concat(parsed.productMonthly);
+      importedPolicies = importedPolicies.concat(parsed.policyMonthly);
+      fileNames.push(parsed.fileName);
     }
+
+    setRows((previous) => mergeRows(previous, importedRows));
+    setProductMonthlyMetrics((previous) => mergeMetrics(previous, importedProducts));
+    setPolicyMonthlyMetrics((previous) => mergeMetrics(previous, importedPolicies));
+    setImportedFiles((previous) => Array.from(new Set([...previous, ...fileNames])));
+
+    const payload = importedRows.map((row) => ({
+      unique_key: row.uniqueKey,
+      data_liquidazione: row.dateISO
+        ? new Date(row.dateISO).toISOString().slice(0, 10)
+        : null,
+      importo_finanziato: row.importoFinanziato,
+      prodotto: Number(row.prodottoCode),
+      dealer: row.dealer,
+      subagente: row.subagente,
+      provvigione: row.provvigione,
+      polizza: row.polizza,
+      cliente: row.cliente,
+      codice_fiscale: row.codiceFiscale,
+      tabella: row.tabella,
+      numero_rate: row.numeroRate,
+      importo_rata: row.importoRata,
+      source_file: row.sourceFile
+    }));
+
+    const { error } = await supabase
+      .from("pratiche")
+      .upsert(payload, { onConflict: "unique_key" });
+
+    if (error) {
+      console.error("Errore Supabase:", error);
+      alert("Errore nel salvataggio su Supabase");
+    }
+  } finally {
+    setUploading(false);
   }
+}
 
   function clearArchive() {
     setRows([]);

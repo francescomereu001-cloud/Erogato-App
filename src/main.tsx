@@ -864,12 +864,12 @@ useEffect(() => {
     setDataSourceMode('supabase');
 
     const payload = importedRows.map((row) => ({
-      unique_key: row.uniqueKey,
+  unique_key: row.stableIdentity,
       data_liquidazione: row.dateISO
         ? new Date(row.dateISO).toISOString().slice(0, 10)
         : null,
       importo_finanziato: row.importoFinanziato,
-      prodotto: Number(row.prodottoCode),
+      prodotto: Number.isFinite(Number(row.prodottoCode)) ? Number(row.prodottoCode) : null,
       dealer: row.dealer,
       subagente: row.subagente,
       provvigione: row.provvigione,

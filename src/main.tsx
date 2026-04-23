@@ -611,17 +611,35 @@ function App() {
 useEffect(() => {
   const loadData = async () => {
     try {
-      const { data, error } = await supabase
-        .from('pratiche')
-        .select('*')
-        .order('data_liquidazione', { ascending: true });
+      const pageSize = 1000;
+      let from = 0;
+      let done = false;
+      let allData: Record<string, unknown>[] = [];
 
-      if (error) {
-        throw error;
+      while (!done) {
+        const { data, error } = await supabase
+          .from('pratiche')
+          .select('*')
+          .order('data_liquidazione', { ascending: true })
+          .range(from, from + pageSize - 1);
+
+        if (error) {
+          throw error;
+        }
+
+        if (data && data.length > 0) {
+          allData = allData.concat(data as Record<string, unknown>[]);
+        }
+
+        if (!data || data.length < pageSize) {
+          done = true;
+        } else {
+          from += pageSize;
+        }
       }
 
-      if (data && data.length > 0) {
-        const mapped: AppRow[] = data
+      if (allData.length > 0) {
+        const mapped: AppRow[] = allData
           .map((r: Record<string, unknown>) => {
             const dateValue = typeof r.data_liquidazione === 'string' ? r.data_liquidazione : null;
             const baseDate = dateValue ? new Date(`${dateValue}T12:00:00`) : null;

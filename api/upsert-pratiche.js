@@ -5,19 +5,47 @@ function getEnv(name) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeSupabaseUrl(url) {
+  if (!url) return '';
+  return url
+    .trim()
+    .replace(/\/rest\/v1\/?$/i, '')
+    .replace(/\/+$/g, '');
+}
+
+function chunkArray(array, size) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
 
-  const supabaseUrl = getEnv('SUPABASE_URL') || getEnv('VITE_SUPABASE_URL') || getEnv('NEXT_PUBLIC_SUPABASE_URL');
-  const serviceRoleKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const supabaseUrl = normalizeSupabaseUrl(
+    getEnv('SUPABASE_URL') ||
+      getEnv('VITE_SUPABASE_URL') ||
+      getEnv('NEXT_PUBLIC_SUPABASE_URL')
+  );
+
+  const serviceRoleKey =
+    getEnv('SUPABASE_SERVICE_ROLE_KEY') ||
+    getEnv('SUPABASE_SECRET_KEY');
 
   if (!supabaseUrl || !serviceRoleKey) {
     res.status(500).json({
       error: 'Config server mancante',
-      details: 'Imposta SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY su Vercel.',
+      details:
+        'Imposta SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY su Vercel.',
+      debug: {
+        hasSupabaseUrl: Boolean(supabaseUrl),
+        hasServiceRoleKey: Boolean(serviceRoleKey),
+      },
     });
     return;
   }
@@ -39,14 +67,18 @@ export default async function handler(req, res) {
   }
 
   const payloadMap = new Map();
+
   for (const row of rows) {
     const uniqueKey = String(row?.unique_key || '').trim();
     if (!uniqueKey) continue;
+
     payloadMap.set(uniqueKey, {
       unique_key: uniqueKey,
       data_liquidazione: row?.data_liquidazione || null,
       importo_finanziato: Number(row?.importo_finanziato || 0),
-      prodotto: Number.isFinite(Number(row?.prodotto)) ? Number(row?.prodotto) : null,
+      prodotto: Number.isFinite(Number(row?.prodotto))
+        ? Number(row?.prodotto)
+        : null,
       dealer: String(row?.dealer || ''),
       subagente: String(row?.subagente || ''),
       provvigione: Number(row?.provvigione || 0),
@@ -61,29 +93,64 @@ export default async function handler(req, res) {
   }
 
   const payload = Array.from(payloadMap.values());
+
   if (!payload.length) {
-    res.status(400).json({ error: 'Le righe inviate non hanno unique_key valida' });
+    res.status(400).json({
+      error: 'Le righe inviate non hanno unique_key valida',
+    });
     return;
   }
 
   try {
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
     });
 
-    const { error, count } = await supabase
-      .from('pratiche')
-      .upsert(payload, { onConflict: 'unique_key', ignoreDuplicates: false, count: 'exact' });
+    let saved = 0;
+    const chunks = chunkArray(payload, 100);
 
-    if (error) {
-      console.error('Errore upsert-pratiche:', error);
-      res.status(500).json({ error: error.message || 'Errore Supabase', details: error });
-      return;
+    for (const chunk of chunks) {
+      const { error } = await supabase
+        .from('pratiche')
+        .upsert(chunk, {
+          onConflict: 'unique_key',
+          ignoreDuplicates: false,
+        });
+
+      if (error) {
+        console.error('Errore upsert-pratiche chunk:', error);
+        res.status(500).json({
+          error: error.message || 'Errore Supabase',
+          details: error,
+        });
+        return;
+      }
+
+      saved += chunk.length;
     }
 
-    res.status(200).json({ ok: true, saved: count ?? payload.length });
+    res.status(200).json({
+      ok: true,
+      saved,
+      chunks: chunks.length,
+    });
   } catch (error) {
     console.error('Errore funzione upsert-pratiche:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Errore server sconosciuto' });
+    res.status(500).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Errore server sconosciuto',
+      details:
+        error instanceof Error
+          ? {
+              name: error.name,
+              stack: error.stack,
+            }
+          : null,
+    });
   }
 }

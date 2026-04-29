@@ -519,19 +519,6 @@ function commissionsByProductSeries(rows: AppRow[], year: number) {
   });
   return series;
 }
-function commissionsByProductAndMaturationMonth(rows: AppRow[], year: number) {
-  const series = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, AUTO: 0, POS: 0 }));
-  rows.forEach((row) => {
-    if (!row.dataCaricamento) return;
-    const maturationDate = new Date(row.dataCaricamento);
-    if (Number.isNaN(maturationDate.getTime()) || maturationDate.getFullYear() !== year) return;
-    const family = getProductFamilyFromCode(row.prodottoCode);
-    if (family === 'ALTRO') return;
-    const monthIndex = maturationDate.getMonth();
-    series[monthIndex][family] += row.provvigione;
-  });
-  return series;
-}
 
 function productSeriesFromMetrics(metrics: ProductMonthlyMetric[], year: number) {
   const base = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, AUTO: 0, POS: 0 }));
@@ -907,7 +894,6 @@ useEffect(() => {
     return fromMetrics;
   }, [filteredRows, currentYear, productMonthlyMetrics]);
   const commissionMonthlyByProductSeries = useMemo(() => commissionsByProductSeries(filteredRows, currentYear), [filteredRows, currentYear]);
-  const commissionByMaturationMonthSeries = useMemo(() => commissionsByProductAndMaturationMonth(filteredRows, currentYear), [filteredRows, currentYear]);
 
   const kpis = useMemo(() => {
     const erogato = filteredRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
@@ -1270,25 +1256,6 @@ useEffect(() => {
                   <tbody>
                     {commissionMonthlyByProductSeries.map((row) => (
                       <tr key={`provv-${row.month}`}>
-                        <td>{row.month}</td>
-                        <td className="right">{euro(row.AUTO)}</td>
-                        <td className="right">{euro(row.POS)}</td>
-                        <td className="right">{euro(row.AUTO + row.POS)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div className="panel">
-              <div className="panel-header"><h3>Provvigioni per mese di maturazione</h3><span>Basato su DATA_CARICAMENTO, divise per prodotto AUTO / POS</span></div>
-              <div className="chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={commissionByMaturationMonthSeries}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="monthShort" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" radius={[8, 8, 0, 0]} /><Bar dataKey="POS" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer></div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Mese maturazione</th><th className="right">Provv. AUTO</th><th className="right">Provv. POS</th><th className="right">Totale provv.</th></tr></thead>
-                  <tbody>
-                    {commissionByMaturationMonthSeries.map((row) => (
-                      <tr key={`maturazione-${row.month}`}>
                         <td>{row.month}</td>
                         <td className="right">{euro(row.AUTO)}</td>
                         <td className="right">{euro(row.POS)}</td>

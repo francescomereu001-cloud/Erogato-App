@@ -22,7 +22,6 @@ import {
   TrendingUp,
   Target,
   Trash2,
-  ShieldCheck,
   Wallet,
   Download,
   Database,
@@ -120,6 +119,8 @@ const DEFAULT_SETTINGS: Settings = {
   annualTargetByYear: { 2026: 10200000 },
   stagionalitaByYear: { 2026: DEFAULT_2026_STAGIONALITA },
 };
+const AUTH_USERNAME = import.meta.env.VITE_APP_USERNAME;
+const AUTH_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
 
 function euro(n: number) {
   return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(Number(n || 0));
@@ -509,6 +510,15 @@ function productSeriesFromRows(rows: AppRow[], year: number) {
   });
   return series;
 }
+function commissionsByProductSeries(rows: AppRow[], year: number) {
+  const series = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, AUTO: 0, POS: 0 }));
+  rows.filter((row) => row.year === year).forEach((row) => {
+    const family = getProductFamilyFromCode(row.prodottoCode);
+    if (family === 'ALTRO') return;
+    series[row.month - 1][family] += row.provvigione;
+  });
+  return series;
+}
 
 function productSeriesFromMetrics(metrics: ProductMonthlyMetric[], year: number) {
   const base = MONTHS_IT.map((month, index) => ({ month, monthShort: MONTHS_SHORT[index], monthIndex: index + 1, AUTO: 0, POS: 0 }));
@@ -592,6 +602,46 @@ function KPI({ title, value, subtitle, icon: Icon }: { title: string; value: str
 }
 
 function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    if (!AUTH_USERNAME || !AUTH_PASSWORD) return true;
+    return sessionStorage.getItem('dealer_erogato_auth_ok') === '1';
+  });
+  const [authUsernameInput, setAuthUsernameInput] = useState('');
+  const [authPasswordInput, setAuthPasswordInput] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  const handleAuthSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (authUsernameInput === AUTH_USERNAME && authPasswordInput === AUTH_PASSWORD) {
+      sessionStorage.setItem('dealer_erogato_auth_ok', '1');
+      setIsAuthenticated(true);
+      setAuthError('');
+      return;
+    }
+    setAuthError('Credenziali non valide.');
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="app-shell">
+        <div className="app-container">
+          <div className="panel" style={{ maxWidth: 420, margin: '80px auto' }}>
+            <div className="panel-header">
+              <h3>Area riservata</h3>
+              <span>Inserisci le credenziali per continuare</span>
+            </div>
+            <form className="stack" onSubmit={handleAuthSubmit}>
+              <input className="input" placeholder="Username" value={authUsernameInput} onChange={(e) => setAuthUsernameInput(e.target.value)} autoComplete="username" />
+              <input className="input" placeholder="Password" type="password" value={authPasswordInput} onChange={(e) => setAuthPasswordInput(e.target.value)} autoComplete="current-password" />
+              {authError ? <div className="muted" style={{ color: '#b42318' }}>{authError}</div> : null}
+              <button type="submit" className="btn primary">Accedi</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const [rows, setRows] = useState<AppRow[]>([]);
   const [productMonthlyMetrics, setProductMonthlyMetrics] = useState<ProductMonthlyMetric[]>([]);
   const [policyMonthlyMetrics, setPolicyMonthlyMetrics] = useState<PolicyMonthlyMetric[]>([]);
@@ -843,6 +893,7 @@ useEffect(() => {
     const fromMetrics = productSeriesFromMetrics(productMonthlyMetrics, currentYear);
     return fromMetrics;
   }, [filteredRows, currentYear, productMonthlyMetrics]);
+  const commissionMonthlyByProductSeries = useMemo(() => commissionsByProductSeries(filteredRows, currentYear), [filteredRows, currentYear]);
 
   const kpis = useMemo(() => {
     const erogato = filteredRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
@@ -1087,7 +1138,6 @@ useEffect(() => {
           <KPI title="Erogato" value={euro0(kpis.erogato)} subtitle={`${num(kpis.pratiche)} pratiche`} icon={Euro} />
           <KPI title="Ticket medio" value={euro0(kpis.ticketMedio)} subtitle="Importo medio pratica" icon={TrendingUp} />
           <KPI title="Provvigioni" value={euro(kpis.provvigioni)} subtitle="PROVV o formula automatica" icon={Wallet} />
-          <KPI title="Polizze" value={euro(kpis.polizze)} subtitle="Dal report polizze / fallback database" icon={ShieldCheck} />
           <KPI title="Dealer attivi" value={num(kpis.dealerCount)} subtitle="Nel filtro corrente" icon={Users} />
           <KPI title="Forecast anno" value={euro0(forecast.projectedAnnual)} subtitle={forecast.annualTarget ? `Target ${euro0(forecast.annualTarget)}` : 'Target non impostato'} icon={Target} />
         </section>
@@ -1187,6 +1237,25 @@ useEffect(() => {
                   <tbody>
                     {productMonthlySeries.map((row) => (
                       <tr key={row.month}>
+                        <td>{row.month}</td>
+                        <td className="right">{euro(row.AUTO)}</td>
+                        <td className="right">{euro(row.POS)}</td>
+                        <td className="right">{euro(row.AUTO + row.POS)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Provvigioni per mese e prodotto</h3><span>Vista mensile AUTO / POS</span></div>
+              <div className="chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={commissionMonthlyByProductSeries}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="monthShort" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" radius={[8, 8, 0, 0]} /><Bar dataKey="POS" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Mese</th><th className="right">Provv. AUTO</th><th className="right">Provv. POS</th><th className="right">Totale provv.</th></tr></thead>
+                  <tbody>
+                    {commissionMonthlyByProductSeries.map((row) => (
+                      <tr key={`provv-${row.month}`}>
                         <td>{row.month}</td>
                         <td className="right">{euro(row.AUTO)}</td>
                         <td className="right">{euro(row.POS)}</td>
@@ -1405,4 +1474,3 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <App />
   </React.StrictMode>,
 );
-

@@ -1060,6 +1060,22 @@ useEffect(() => {
   }
 
   const progress = forecast.annualTarget ? Math.min((forecast.projectedAnnual / forecast.annualTarget) * 100, 100) : 0;
+  const quarterlyProgress = useMemo(() => {
+    const quarters = [
+      { label: 'Q1', start: 0, end: 2 },
+      { label: 'Q2', start: 3, end: 5 },
+      { label: 'Q3', start: 6, end: 8 },
+      { label: 'Q4', start: 9, end: 11 },
+    ];
+    return quarters.map((quarter) => {
+      const months = forecast.monthlyForecast.slice(quarter.start, quarter.end + 1);
+      const target = months.reduce((sum, month) => sum + month.stimato, 0);
+      const actual = months.reduce((sum, month) => sum + month.erogato, 0);
+      const projected = months.reduce((sum, month) => sum + Math.max(month.erogato, month.ipotetico, month.stimato), 0);
+      const coverage = target > 0 ? projected / target : 0;
+      return { ...quarter, target, actual, projected, coverage };
+    });
+  }, [forecast.monthlyForecast]);
   const now = new Date();
   const fallbackCurrentMonth = [...monthlyData].reverse().find((row) => row.erogato > 0)?.monthIndex || 1;
   const currentMonthIndex = currentYear === now.getFullYear() ? now.getMonth() + 1 : fallbackCurrentMonth;
@@ -1281,6 +1297,25 @@ useEffect(() => {
               <div className="panel-header"><h3>Avanzamento target</h3><span>Copertura stimata del target annuale</span></div>
               <div className="progress"><div className="progress-bar" style={{ width: `${progress}%` }} /></div>
               <div className="muted">Copertura stimata: <strong>{forecast.annualTarget ? pct(forecast.projectedAnnual / forecast.annualTarget) : '-'}</strong></div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Avanzamento target per trimestre</h3><span>Target trimestrale derivato dalla stagionalità annuale</span></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Trimestre</th><th className="right">Target</th><th className="right">Reale</th><th className="right">Proiezione</th><th className="right">Copertura</th></tr></thead>
+                  <tbody>
+                    {quarterlyProgress.map((quarter) => (
+                      <tr key={quarter.label}>
+                        <td>{quarter.label}</td>
+                        <td className="right">{euro(quarter.target)}</td>
+                        <td className="right">{euro(quarter.actual)}</td>
+                        <td className="right">{euro(quarter.projected)}</td>
+                        <td className="right">{quarter.target ? pct(quarter.coverage) : '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
             <div className="panel">
               <div className="panel-header"><h3>Tabella previsione erogato</h3><span>Con reale, stimato, media giornaliera e mese ipotetico</span></div>

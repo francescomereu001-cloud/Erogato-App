@@ -96,6 +96,38 @@ type WorkbookImport = {
 
 type ViewGranularity = 'monthly' | 'weekly' | 'daily';
 type DataSourceMode = 'supabase' | 'local' | 'empty';
+type DealerSortKey = 'erogato' | 'crescitaPct' | 'ticketMedio' | 'provvigioni';
+
+type SmartDealerRow = {
+  name: string;
+  erogato: number;
+  pratiche: number;
+  ticketMedio: number;
+  provvigioni: number;
+  autoAmount: number;
+  posAmount: number;
+  autoPct: number;
+  posPct: number;
+  currentMonthErogato: number;
+  previousMonthErogato: number;
+  growthErogatoAbs: number;
+  growthErogatoPct: number;
+  currentMonthPratiche: number;
+  previousMonthPratiche: number;
+  growthPraticheAbs: number;
+  statoDealer: 'Top dealer' | 'In crescita' | 'In calo' | 'Da lavorare';
+};
+
+type AlertSeverity = 'alta' | 'media' | 'bassa' | 'positiva';
+type DealerAlert = {
+  key: string;
+  dealer: string;
+  tipo: string;
+  severity: AlertSeverity;
+  descrizione: string;
+  dato: string;
+  suggerimento: string;
+};
 
 const STORAGE_KEY = 'dealer_erogato_app_v8b';
 const MONTHS_IT = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
@@ -555,6 +587,105 @@ function productMix(rows: AppRow[], year: number) {
   return Array.from(map.values()).sort((a, b) => b.value - a.value);
 }
 
+function monthWindow(referenceYear: number, referenceMonth: number, offset: number) {
+  const d = new Date(referenceYear, referenceMonth - 1 + offset, 1);
+  return { year: d.getFullYear(), month: d.getMonth() + 1 };
+}
+
+function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: number): SmartDealerRow[] {
+  const current = monthWindow(year, referenceMonth, 0);
+  const previous = monthWindow(year, referenceMonth, -1);
+  const map = new Map<string, SmartDealerRow>();
+  rows.filter((row) => row.year === year).forEach((row) => {
+    const key = row.dealer || 'N/D';
+    if (!map.has(key)) {
+      map.set(key, {
+        name: key, erogato: 0, pratiche: 0, ticketMedio: 0, provvigioni: 0,
+        autoAmount: 0, posAmount: 0, autoPct: 0, posPct: 0,
+        currentMonthErogato: 0, previousMonthErogato: 0, growthErogatoAbs: 0, growthErogatoPct: 0,
+        currentMonthPratiche: 0, previousMonthPratiche: 0, growthPraticheAbs: 0, statoDealer: 'Da lavorare',
+      });
+    }
+    const item = map.get(key)!;
+    item.erogato += row.importoFinanziato;
+    item.pratiche += 1;
+    item.provvigioni += row.provvigione;
+    const family = getProductFamilyFromCode(row.prodottoCode);
+    if (family === 'AUTO') item.autoAmount += row.importoFinanziato;
+    if (family === 'POS') item.posAmount += row.importoFinanziato;
+    if (row.year === current.year && row.month === current.month) {
+      item.currentMonthErogato += row.importoFinanziato;
+      item.currentMonthPratiche += 1;
+    }
+    if (row.year === previous.year && row.month === previous.month) {
+      item.previousMonthErogato += row.importoFinanziato;
+      item.previousMonthPratiche += 1;
+    }
+  });
+
+  const totals = Array.from(map.values());
+  const maxErogato = Math.max(...totals.map((row) => row.erogato), 0);
+  const avgTicket = totals.length ? totals.reduce((s, r) => s + (r.pratiche ? (r.erogato / r.pratiche) : 0), 0) / totals.length : 0;
+
+  return totals.map((row) => {
+    const totalMix = row.autoAmount + row.posAmount;
+    row.ticketMedio = row.pratiche ? row.erogato / row.pratiche : 0;
+    row.autoPct = totalMix ? row.autoAmount / totalMix : 0;
+    row.posPct = totalMix ? row.posAmount / totalMix : 0;
+    row.growthErogatoAbs = row.currentMonthErogato - row.previousMonthErogato;
+    row.growthPraticheAbs = row.currentMonthPratiche - row.previousMonthPratiche;
+    row.growthErogatoPct = row.previousMonthErogato > 0 ? (row.growthErogatoAbs / row.previousMonthErogato) : (row.currentMonthErogato > 0 ? 1 : 0);
+
+    if (row.erogato >= maxErogato * 0.75 && row.growthErogatoPct >= 0.1) row.statoDealer = 'Top dealer';
+    else if (row.growthErogatoPct >= 0.2 || row.growthPraticheAbs >= 3) row.statoDealer = 'In crescita';
+    else if (row.growthErogatoPct <= -0.3) row.statoDealer = 'In calo';
+    else if (row.erogato < maxErogato * 0.25 || row.ticketMedio < avgTicket * 0.75) row.statoDealer = 'Da lavorare';
+    else row.statoDealer = 'In crescita';
+    return row;
+  });
+}
+
+function buildDealerAlerts(rows: SmartDealerRow[]): DealerAlert[] {
+  const alerts: DealerAlert[] = [];
+  const currentTotal = rows.reduce((sum, row) => sum + row.currentMonthErogato, 0);
+  const activeAvgTicket = rows.filter((row) => row.currentMonthPratiche > 0).reduce((sum, row) => sum + row.ticketMedio, 0)
+    / Math.max(rows.filter((row) => row.currentMonthPratiche > 0).length, 1);
+  rows.forEach((row) => {
+    if (row.previousMonthPratiche > 0 && row.currentMonthPratiche === 0) {
+      alerts.push({
+        key: `${row.name}-fermo`, dealer: row.name, tipo: 'Dealer fermo', severity: 'alta',
+        descrizione: 'Dealer attivo il mese precedente ma senza pratiche nel mese corrente.',
+        dato: `${row.previousMonthPratiche} pratiche precedenti → 0 correnti`,
+        suggerimento: 'Contattare il dealer per capire il motivo del calo.',
+      });
+    }
+    if (row.growthErogatoPct <= -0.3 && row.previousMonthErogato > 0) {
+      alerts.push({ key: `${row.name}-calo`, dealer: row.name, tipo: 'Dealer in forte calo', severity: 'alta', descrizione: 'Calo erogato oltre soglia del 30% mese su mese.', dato: `${pct(row.growthErogatoPct)} (${euro(row.currentMonthErogato)} vs ${euro(row.previousMonthErogato)})`, suggerimento: 'Verificare se ci sono pratiche bloccate o non ancora liquidate.' });
+    }
+    const prevTicket = row.previousMonthPratiche ? row.previousMonthErogato / row.previousMonthPratiche : 0;
+    const currTicket = row.currentMonthPratiche ? row.currentMonthErogato / row.currentMonthPratiche : 0;
+    const ticketDelta = prevTicket > 0 ? (currTicket - prevTicket) / prevTicket : 0;
+    if (prevTicket > 0 && ticketDelta <= -0.25) {
+      alerts.push({ key: `${row.name}-ticket-calo`, dealer: row.name, tipo: 'Ticket medio in calo', severity: 'media', descrizione: 'Ticket medio in riduzione oltre il 25% sul mese precedente.', dato: `${pct(ticketDelta)} (${euro(currTicket)} vs ${euro(prevTicket)})`, suggerimento: 'Valutare azione commerciale per aumentare il ticket medio.' });
+    }
+    if (row.currentMonthPratiche > 0 && row.ticketMedio < activeAvgTicket * 0.7) {
+      alerts.push({ key: `${row.name}-ticket-basso`, dealer: row.name, tipo: 'Dealer con basso ticket medio', severity: 'bassa', descrizione: 'Ticket medio significativamente inferiore alla media generale.', dato: `${euro(row.ticketMedio)} vs media ${euro(activeAvgTicket)}`, suggerimento: 'Valutare azione commerciale per aumentare il ticket medio.' });
+    }
+    if (row.growthErogatoPct >= 0.3 && row.previousMonthErogato > 0) {
+      alerts.push({ key: `${row.name}-potenziale`, dealer: row.name, tipo: 'Dealer ad alto potenziale', severity: 'positiva', descrizione: 'Crescita erogato superiore al 30% mese su mese.', dato: `${pct(row.growthErogatoPct)} (${euro(row.currentMonthErogato)} vs ${euro(row.previousMonthErogato)})`, suggerimento: 'Presidiare il dealer perché sta crescendo.' });
+    }
+    const share = currentTotal > 0 ? row.currentMonthErogato / currentTotal : 0;
+    if (share > 0.35) {
+      alerts.push({ key: `${row.name}-concentrazione`, dealer: row.name, tipo: 'Concentrazione eccessiva', severity: 'media', descrizione: 'Peso del dealer troppo elevato sull’erogato mensile totale.', dato: `${pct(share)} del totale mese`, suggerimento: 'Ridurre la dipendenza da un singolo dealer.' });
+    }
+    if (row.currentMonthPratiche > 0 && row.currentMonthPratiche < 2 && row.previousMonthPratiche > 0) {
+      alerts.push({ key: `${row.name}-volumi`, dealer: row.name, tipo: 'Volumi bassi', severity: 'media', descrizione: 'Dealer attivo in passato ma con volumi molto bassi nel mese corrente.', dato: `${row.currentMonthPratiche} pratiche correnti`, suggerimento: 'Contattare il dealer per capire il motivo del calo.' });
+    }
+  });
+  const weight: Record<AlertSeverity, number> = { alta: 0, media: 1, bassa: 2, positiva: 3 };
+  return alerts.sort((a, b) => weight[a.severity] - weight[b.severity]);
+}
+
 function buildForecast(rows: AppRow[], year: number, settings: Settings, referenceDate = new Date()) {
   const monthly = monthSeriesFromRows(rows, year);
   const target = Number(settings.annualTargetByYear?.[year] || 0);
@@ -657,6 +788,7 @@ function App() {
   const [dataSourceMode, setDataSourceMode] = useState<DataSourceMode>('empty');
   const [viewGranularity, setViewGranularity] = useState<ViewGranularity>('monthly');
   const [selectedPeriodKey, setSelectedPeriodKey] = useState('');
+  const [dealerSortKey, setDealerSortKey] = useState<DealerSortKey>('erogato');
 
 useEffect(() => {
   const loadData = async () => {
@@ -817,9 +949,7 @@ useEffect(() => {
     }
     return timeSeriesData;
   }, [timeSeriesData, viewGranularity]);
-  const dealerRanking = useMemo(() => aggregateByField(filteredRows, currentYear, 'dealer').slice(0, 12), [filteredRows, currentYear]);
   const subagenteRanking = useMemo(() => aggregateByField(filteredRows, currentYear, 'subagente').slice(0, 12), [filteredRows, currentYear]);
-  const rawDealerTable = useMemo(() => aggregateByField(filteredRows, currentYear, 'dealer'), [filteredRows, currentYear]);
   const subagenteTable = useMemo(() => aggregateByField(filteredRows, currentYear, 'subagente'), [filteredRows, currentYear]);
   const mix = useMemo(() => productMix(filteredRows, currentYear), [filteredRows, currentYear]);
   const forecast = useMemo(() => buildForecast(filteredRows, currentYear, settings, new Date()), [filteredRows, currentYear, settings]);
@@ -911,9 +1041,25 @@ useEffect(() => {
     return { erogato, pratiche, ticketMedio: pratiche ? erogato / pratiche : 0, provvigioni, polizze, dealerCount };
   }, [filteredRows, dealerFilter, subagenteFilter, productFilter, search, policyTotalsForYear, dealerPolicyTotals]);
 
-  const dealerTable = useMemo(() => {
-    return rawDealerTable.map((row) => ({ ...row, polizze: subagenteFilter === 'ALL' && productFilter === 'ALL' && !search && dealerPolicyTotals.has(row.name) ? (dealerPolicyTotals.get(row.name) || 0) : row.polizze }));
-  }, [rawDealerTable, subagenteFilter, productFilter, search, dealerPolicyTotals]);
+  const referenceMonth = useMemo(() => {
+    const byYear = filteredRows.filter((row) => row.year === currentYear);
+    if (!byYear.length) return new Date().getMonth() + 1;
+    return Math.max(...byYear.map((row) => row.month));
+  }, [filteredRows, currentYear]);
+
+  const smartDealerTable = useMemo(() => {
+    const data = buildSmartDealerRows(filteredRows, currentYear, referenceMonth);
+    const sorters: Record<DealerSortKey, (a: SmartDealerRow, b: SmartDealerRow) => number> = {
+      erogato: (a, b) => b.erogato - a.erogato,
+      crescitaPct: (a, b) => b.growthErogatoPct - a.growthErogatoPct,
+      ticketMedio: (a, b) => b.ticketMedio - a.ticketMedio,
+      provvigioni: (a, b) => b.provvigioni - a.provvigioni,
+    };
+    return data.sort(sorters[dealerSortKey]);
+  }, [filteredRows, currentYear, referenceMonth, dealerSortKey]);
+
+  const dealerRanking = useMemo(() => smartDealerTable.slice(0, 12), [smartDealerTable]);
+  const dealerAlerts = useMemo(() => buildDealerAlerts(smartDealerTable), [smartDealerTable]);
 
  async function handleFiles(fileList: FileList | null) {
   const files = Array.from(fileList || []);
@@ -1230,6 +1376,30 @@ useEffect(() => {
               </div>
             </div>
 
+            <div className="panel">
+              <div className="panel-header"><h3>Alert Automatici</h3><span>Segnali commerciali auto-calcolati sul filtro corrente</span></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Dealer</th><th>Tipo alert</th><th>Gravità</th><th>Descrizione</th><th>Dato trigger</th><th>Suggerimento operativo</th></tr></thead>
+                  <tbody>
+                    {dealerAlerts.map((alert) => (
+                      <tr key={alert.key}>
+                        <td>{alert.dealer}</td>
+                        <td>{alert.tipo}</td>
+                        <td><span className="badge">{alert.severity}</span></td>
+                        <td>{alert.descrizione}</td>
+                        <td>{alert.dato}</td>
+                        <td>{alert.suggerimento}</td>
+                      </tr>
+                    ))}
+                    {!dealerAlerts.length && (
+                      <tr><td colSpan={6}>Nessun alert nel mese selezionato dai dati correnti.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {comparisonYears.length > 0 && viewGranularity === 'monthly' && (
               <div className="panel">
                 <div className="panel-header"><h3>Confronto anno su anno</h3><span>{currentYear - 1} vs {currentYear}</span></div>
@@ -1352,17 +1522,17 @@ useEffect(() => {
           <div className="stack">
             <div className="panel-grid two-one">
               <div className="panel">
-                <div className="panel-header"><h3>Top dealer per erogato</h3><span>Dealer del periodo filtrato</span></div>
+                <div className="panel-header"><h3>Classifica Dealer Intelligente</h3><span>Ranking dinamico sul periodo filtrato</span></div>
                 <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerRanking} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="name" width={210} /><Tooltip formatter={(value: number) => euro(value)} /><Bar dataKey="erogato" radius={[0, 8, 8, 0]} /></BarChart></ResponsiveContainer></div>
               </div>
               <div className="panel">
-                <div className="panel-header"><h3>Sintesi dealer</h3><span>Prime posizioni</span></div>
+                <div className="panel-header"><h3>Sintesi dealer</h3><span>Mese corrente vs mese precedente</span></div>
                 <div className="list-stack">
                   {dealerRanking.slice(0, 10).map((row, index) => (
                     <div key={row.name} className="list-item">
                       <div>
                         <div className="list-title">#{index + 1} {row.name}</div>
-                        <div className="list-subtitle">{row.pratiche} pratiche · ticket {euro0(row.ticketMedio)}</div>
+                        <div className="list-subtitle">{row.pratiche} pratiche · crescita {pct(row.growthErogatoPct)} · stato {row.statoDealer}</div>
                       </div>
                       <div className="list-value">{euro0(row.erogato)}</div>
                     </div>
@@ -1371,13 +1541,22 @@ useEffect(() => {
               </div>
             </div>
             <div className="panel">
-              <div className="panel-header"><h3>Tabella dealer</h3><span>Erogato, pratiche, ticket, provvigioni e polizze</span></div>
+              <div className="panel-header"><h3>Tabella dealer intelligente</h3><span>Ordinabile per KPI commerciali</span></div>
+              <div className="filters-grid">
+                <select className="select" value={dealerSortKey} onChange={(e) => setDealerSortKey(e.target.value as DealerSortKey)}>
+                  <option value="erogato">Ordina per erogato totale</option>
+                  <option value="crescitaPct">Ordina per crescita %</option>
+                  <option value="ticketMedio">Ordina per ticket medio</option>
+                  <option value="provvigioni">Ordina per provvigioni</option>
+                </select>
+                <div className="readonly">Mese analisi crescita: {MONTHS_IT[referenceMonth - 1]}</div>
+              </div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Dealer</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th className="right">Polizze</th></tr></thead>
+                  <thead><tr><th>Dealer</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th className="right">AUTO</th><th className="right">POS</th><th className="right">% AUTO/POS</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
                   <tbody>
-                    {dealerTable.map((row) => (
-                      <tr key={row.name}><td>{row.name}</td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td className="right">{euro(row.polizze)}</td></tr>
+                    {smartDealerTable.map((row) => (
+                      <tr key={row.name}><td>{row.name}</td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td className="right">{euro(row.autoAmount)}</td><td className="right">{euro(row.posAmount)}</td><td className="right">{pct(row.autoPct)} / {pct(row.posPct)}</td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
                     ))}
                   </tbody>
                 </table>

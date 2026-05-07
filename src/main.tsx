@@ -256,6 +256,49 @@ function workedDaysInMonth(year: number, monthIndex: number, referenceDate = new
   return count;
 }
 
+function buildDailyProgressComparison(rows: AppRow[], year: number, month: number) {
+  const previousMonth = month === 1 ? 12 : month - 1;
+  const previousMonthYear = month === 1 ? year - 1 : year;
+  const previousYear = year - 1;
+  const maxDays = Math.max(
+    new Date(year, month, 0).getDate(),
+    new Date(previousMonthYear, previousMonth, 0).getDate(),
+    new Date(previousYear, month, 0).getDate(),
+  );
+
+  const buildDailyTotals = (targetYear: number, targetMonth: number) => {
+    const totals = new Map<number, number>();
+    rows.forEach((row) => {
+      if (row.year !== targetYear || row.month !== targetMonth || !row.dateISO) return;
+      const day = new Date(row.dateISO).getDate();
+      totals.set(day, (totals.get(day) || 0) + row.importoFinanziato);
+    });
+    return totals;
+  };
+
+  const currTotals = buildDailyTotals(year, month);
+  const prevMonthTotals = buildDailyTotals(previousMonthYear, previousMonth);
+  const prevYearTotals = buildDailyTotals(previousYear, month);
+
+  let currCumulative = 0;
+  let prevMonthCumulative = 0;
+  let prevYearCumulative = 0;
+
+  return Array.from({ length: maxDays }, (_, index) => {
+    const day = index + 1;
+    currCumulative += currTotals.get(day) || 0;
+    prevMonthCumulative += prevMonthTotals.get(day) || 0;
+    prevYearCumulative += prevYearTotals.get(day) || 0;
+    return {
+      day,
+      label: `${day}`,
+      corrente: currCumulative,
+      mesePrecedente: prevMonthCumulative,
+      annoScorso: prevYearCumulative,
+    };
+  });
+}
+
 function detectWorkbookYear(rows: SourceRow[], fileName: string) {
   const years = rows
     .map((row) => excelDateToDate(pick(row, ['DATA_LIQUIDAZIONE', 'DATA_CARICAMENTO'])))
@@ -938,6 +981,16 @@ useEffect(() => {
       return yearOk && dealerOk && subagenteOk && productOk && searchOk;
     });
   }, [rows, currentYear, dealerFilter, subagenteFilter, productFilter, search]);
+  const filteredRowsAllYears = useMemo(() => {
+    return rows.filter((row) => {
+      const dealerOk = dealerFilter === 'ALL' || row.dealer === dealerFilter;
+      const subagenteOk = subagenteFilter === 'ALL' || row.subagente === subagenteFilter;
+      const productOk = productFilter === 'ALL' || row.prodottoCode === productFilter;
+      const searchPool = [row.dealer, row.subagente, row.cliente, row.localita, row.codiceFiscale, row.tabella].join(' ').toLowerCase();
+      const searchOk = !search || searchPool.includes(search.toLowerCase());
+      return dealerOk && subagenteOk && productOk && searchOk;
+    });
+  }, [rows, dealerFilter, subagenteFilter, productFilter, search]);
 
   const hasExtraFilters = dealerFilter !== 'ALL' || subagenteFilter !== 'ALL' || productFilter !== 'ALL' || Boolean(search);
   const monthlyData = useMemo(() => monthSeriesFromRows(filteredRows, currentYear), [filteredRows, currentYear]);
@@ -1060,6 +1113,10 @@ useEffect(() => {
 
   const dealerRanking = useMemo(() => smartDealerTable.slice(0, 12), [smartDealerTable]);
   const dealerAlerts = useMemo(() => buildDealerAlerts(smartDealerTable), [smartDealerTable]);
+  const dailyProgressComparison = useMemo(
+    () => buildDailyProgressComparison(filteredRowsAllYears, currentYear, referenceMonth),
+    [filteredRowsAllYears, currentYear, referenceMonth],
+  );
 
  async function handleFiles(fileList: FileList | null) {
   const files = Array.from(fileList || []);
@@ -1404,6 +1461,29 @@ useEffect(() => {
               <div className="panel">
                 <div className="panel-header"><h3>Confronto anno su anno</h3><span>{currentYear - 1} vs {currentYear}</span></div>
                 <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparisonYears}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(currentYear - 1)} strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(currentYear)} strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
+              </div>
+            )}
+
+            {viewGranularity === 'monthly' && (
+              <div className="panel">
+                <div className="panel-header">
+                  <h3>Avanzamento giornaliero mese vs storico</h3>
+                  <span>{MONTHS_IT[referenceMonth - 1]} {currentYear} vs mese precedente e stesso mese anno scorso</span>
+                </div>
+                <div className="chart">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={dailyProgressComparison}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="label" />
+                      <YAxis />
+                      <Tooltip formatter={(value: number) => euro(value)} />
+                      <Legend />
+                      <Line type="monotone" dataKey="corrente" name={`${currentYear}`} strokeWidth={3} dot={false} />
+                      <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" strokeWidth={2} dot={false} />
+                      <Line type="monotone" dataKey="annoScorso" name={`${currentYear - 1}`} strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             )}
           </div>

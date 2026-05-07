@@ -1129,7 +1129,30 @@ useEffect(() => {
   );
   const dailyProgressComparison = useMemo(() => {
     const base = buildDailyProgressComparison(filteredRowsAllYears, currentYear, referenceMonth);
-    if (!bestMonthYtd) return base.map((row) => ({ ...row, meseMiglioreYtd: 0 }));
+    const ytdMonths = Array.from({ length: referenceMonth }, (_, index) => index + 1);
+    const cumulativeByMonth = new Map<number, number[]>();
+    ytdMonths.forEach((month) => {
+      const monthRows = filteredRowsAllYears.filter((row) => row.year === currentYear && row.month === month && row.dateISO);
+      const dailyTotals = new Map<number, number>();
+      monthRows.forEach((row) => {
+        const day = new Date(row.dateISO!).getDate();
+        dailyTotals.set(day, (dailyTotals.get(day) || 0) + row.importoFinanziato);
+      });
+      let cumulative = 0;
+      const cumulativeSeries = base.map((row) => {
+        cumulative += dailyTotals.get(row.day) || 0;
+        return cumulative;
+      });
+      cumulativeByMonth.set(month, cumulativeSeries);
+    });
+
+    const withYearAverage = base.map((row, index) => {
+      const total = ytdMonths.reduce((sum, month) => sum + (cumulativeByMonth.get(month)?.[index] || 0), 0);
+      const mediaAnnoCorrente = ytdMonths.length ? total / ytdMonths.length : 0;
+      return { ...row, mediaAnnoCorrente };
+    });
+
+    if (!bestMonthYtd) return withYearAverage.map((row) => ({ ...row, meseMiglioreYtd: 0 }));
     const bestMonthRows = filteredRowsAllYears.filter((row) => row.year === currentYear && row.month === bestMonthYtd && row.dateISO);
     const bestDailyTotals = new Map<number, number>();
     bestMonthRows.forEach((row) => {
@@ -1137,7 +1160,7 @@ useEffect(() => {
       bestDailyTotals.set(day, (bestDailyTotals.get(day) || 0) + row.importoFinanziato);
     });
     let bestCumulative = 0;
-    return base.map((row) => {
+    return withYearAverage.map((row) => {
       bestCumulative += bestDailyTotals.get(row.day) || 0;
       return { ...row, meseMiglioreYtd: bestCumulative };
     });
@@ -1493,7 +1516,7 @@ useEffect(() => {
               <div className="panel">
                 <div className="panel-header">
                   <h3>Avanzamento giornaliero mese vs storico</h3>
-                  <span>{MONTHS_IT[referenceMonth - 1]} {currentYear} vs mese precedente, stesso mese anno scorso e miglior mese YTD</span>
+                  <span>{MONTHS_IT[referenceMonth - 1]} {currentYear} vs mese precedente, anno scorso, mese top YTD e media anno corrente</span>
                 </div>
                 <div className="chart">
                   <ResponsiveContainer width="100%" height="100%">
@@ -1507,6 +1530,7 @@ useEffect(() => {
                       <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" strokeWidth={2} dot={false} />
                       <Line type="monotone" dataKey="annoScorso" name={`${currentYear - 1}`} strokeWidth={2} dot={false} />
                       <Line type="monotone" dataKey="meseMiglioreYtd" name={bestMonthYtd ? `Mese top YTD (${MONTHS_IT[bestMonthYtd - 1]})` : 'Mese top YTD'} strokeWidth={2} dot={false} />
+                      <Line type="monotone" dataKey="mediaAnnoCorrente" name="Media anno corrente" strokeWidth={2} dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>

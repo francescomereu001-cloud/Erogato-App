@@ -1398,6 +1398,15 @@ useEffect(() => {
         </section>
 
         <section className="filters-card">
+          <div className="filters-headline">
+            <div>
+              <strong>Filtri rapidi</strong>
+              <div className="muted">Configura la vista in pochi tocchi, poi approfondisci con i grafici.</div>
+            </div>
+            <button className="action-button ghost" onClick={resetFilters}>
+              <RefreshCw className="icon" /> Reset filtri
+            </button>
+          </div>
           <div className="filters-top">
             <div className="search-wrap">
               <Search className="search-icon" />
@@ -1414,6 +1423,12 @@ useEffect(() => {
                 <option value="daily">Vista giornaliera</option>
               </select>
             </div>
+          </div>
+          <div className="quick-pills">
+            <button className={`pill ${viewGranularity === 'daily' ? 'active' : ''}`} onClick={() => setViewGranularity('daily')}>Vista Giornaliera</button>
+            <button className={`pill ${viewGranularity === 'weekly' ? 'active' : ''}`} onClick={() => setViewGranularity('weekly')}>Vista Settimanale</button>
+            <button className={`pill ${viewGranularity === 'monthly' ? 'active' : ''}`} onClick={() => setViewGranularity('monthly')}>Vista Mensile</button>
+            <button className={`pill ${yearFilter === String(currentYear) ? 'active' : ''}`} onClick={() => setYearFilter(String(currentYear))}>Anno corrente</button>
           </div>
           {importedFiles.length > 0 && <div className="imported-files">File importati: {importedFiles.join(', ')}</div>}
         </section>

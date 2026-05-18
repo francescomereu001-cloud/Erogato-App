@@ -842,6 +842,15 @@ function App() {
   const [selectedPeriodKey, setSelectedPeriodKey] = useState('');
   const [dealerSortKey, setDealerSortKey] = useState<DealerSortKey>('erogato');
 
+  const resetFilters = () => {
+    setSearch('');
+    setYearFilter(String(new Date().getFullYear()));
+    setDealerFilter('ALL');
+    setSubagenteFilter('ALL');
+    setProductFilter('ALL');
+    setViewGranularity('monthly');
+  };
+
 useEffect(() => {
   const loadData = async () => {
     try {

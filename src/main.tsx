@@ -32,6 +32,14 @@ import {
   ShieldAlert,
   CircleCheck,
   TriangleAlert,
+  Home,
+  CalendarDays,
+  Siren,
+  Package,
+  Building2,
+  BriefcaseBusiness,
+  Settings,
+  Menu,
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from "./supabase";
@@ -1391,53 +1399,58 @@ useEffect(() => {
       duplicate: Array.from(duplicates.values()).filter((v) => v > 1).length,
     };
   }, [rows]);
+  const sectionTitles: Record<typeof tab, string> = {
+    executive: 'Executive Dashboard',
+    focus: 'Focus Mese',
+    intelligence: 'Dealer Intelligence',
+    alerts: 'Alert Center',
+    products: 'Prodotti',
+    forecast: 'Forecast & Target',
+    subagenti: 'Filiali',
+    portfolio: 'Portafoglio',
+    data: 'Dati / Impostazioni',
+  };
 
   return (
     <div className="app-shell">
-      <div className="page">
-        <header className="hero">
-          <div>
-            <h1>Dealer Erogato App</h1>
-            <p>Dashboard per erogato, forecast, dealer, filiali e prodotto. La data di riferimento è sempre <strong>DATA_LIQUIDAZIONE</strong>.</p>
-          </div>
-          <div className="hero-actions">
-            <label className="action-button primary">
-              <Upload className="icon" />
-              <span>{uploading ? 'Importazione...' : 'Carica Excel'}</span>
-              <input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} />
-            </label>
-            <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
-            <label className="action-button">
-              <RefreshCw className="icon" />
-              <span>Importa backup</span>
-              <input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} />
-            </label>
-            <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
-          </div>
-        </header>
-
-        <section className="banner-grid">
-          <div className="banner-card info">
-            <Database className="icon large" />
+      <div className="main-layout">
+        <aside className="sidebar">
+          <div className="sidebar-brand">Dealer Erogato App</div>
+          <div className="mobile-nav"><Menu className="icon" /> Navigazione</div>
+          {[
+            ['executive', 'Executive', Home],
+            ['focus', 'Focus Mese', CalendarDays],
+            ['intelligence', 'Dealer Intelligence', BriefcaseBusiness],
+            ['alerts', 'Alert Center', Siren],
+            ['products', 'Prodotti', Package],
+            ['forecast', 'Forecast & Target', Target],
+            ['subagenti', 'Filiali', Building2],
+            ['portfolio', 'Portafoglio', Boxes],
+            ['data', 'Dati / Impostazioni', Settings],
+          ].map(([key, label, Icon]) => (
+            <button key={key} className={`sidebar-item ${tab === key ? 'active' : ''}`} onClick={() => setTab(key as typeof tab)}>
+              <Icon className="icon" /> <span>{label}</span>
+            </button>
+          ))}
+        </aside>
+        <div className="main-area">
+          <header className="topbar">
             <div>
-              <div className="banner-title">{dataSourceMode === 'supabase' ? 'Archivio database' : dataSourceMode === 'local' ? 'Archivio locale' : 'Archivio'}</div>
-              <div className="banner-value">{num(rows.length)} pratiche</div>
-              <div className="banner-text">{dataSourceMode === 'supabase'
-                ? 'I dati vengono letti da Supabase e si aggiornano a ogni nuovo caricamento.'
-                : dataSourceMode === 'local'
-                  ? 'Fallback locale attivo. Carica o importa un backup se il database non è disponibile.'
-                  : 'Nessun dato disponibile. Carica un export Excel o importa un backup.'}</div>
+              <div className="topbar-title">{sectionTitles[tab]}</div>
+              <div className="topbar-meta">
+                <span className="topbar-chip">Anno: {currentYear}</span>
+                <span className="topbar-chip">Fonte: {dataSourceMode === 'supabase' ? 'Supabase' : dataSourceMode === 'local' ? 'Locale' : 'Vuoto'}</span>
+                <span className="topbar-chip">Pratiche: {num(rows.length)}</span>
+              </div>
             </div>
-          </div>
-          <div className="banner-card success">
-            <Target className="icon large" />
-            <div>
-              <div className="banner-title">Erogato {currentMonthLabel} {currentYear}</div>
-              <div className="banner-value">{currentMonthCard ? euro(currentMonthCard.erogato) : '-'}</div>
-              <div className="banner-text">Il banner si aggiorna automaticamente sul mese corrente dell'anno selezionato.</div>
+            <div className="hero-actions">
+              <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Carica Excel'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
+              <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
+              <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} /></label>
+              <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
             </div>
-          </div>
-        </section>
+          </header>
+          <div className="content-area">
 
         <section className="filters-card">
           <div className="filters-headline">
@@ -1483,24 +1496,26 @@ useEffect(() => {
           <KPI title="Forecast anno" value={euro0(forecast.projectedAnnual)} subtitle={forecast.annualTarget ? `Target ${euro0(forecast.annualTarget)}` : 'Target non impostato'} icon={Target} />
         </section>
 
-        <nav className="tabs">
-          {[
-            ['executive', 'Executive'],
-            ['focus', 'Focus Mese'],
-            ['products', 'Prodotti'],
-            ['forecast', 'Previsione'],
-            ['intelligence', 'Dealer Intelligence'],
-            ['alerts', 'Alert Center'],
-            ['subagenti', 'Filiali'],
-            ['portfolio', 'Portafoglio'],
-            ['data', 'Dati'],
-          ].map(([key, label]) => (
-            <button key={key} className={`tab ${tab === key ? 'active' : ''}`} onClick={() => setTab(key as typeof tab)}>{label}</button>
-          ))}
-        </nav>
-
         {tab === 'executive' && (
           <div className="stack">
+            <section className="dashboard-grid">
+              <KPI title="Erogato anno" value={euro0(kpis.erogato)} subtitle={`${currentYear}`} icon={Euro} />
+              <KPI title="Erogato mese corrente" value={euro0(currentMonthCard?.erogato || 0)} subtitle={currentMonthLabel} icon={CalendarDays} />
+              <KPI title="Pratiche" value={num(kpis.pratiche)} subtitle="Totale pratiche" icon={Users} />
+              <KPI title="Ticket medio" value={euro0(kpis.ticketMedio)} subtitle="Importo medio" icon={TrendingUp} />
+              <KPI title="Provvigioni" value={euro0(kpis.provvigioni)} subtitle="Anno selezionato" icon={Wallet} />
+              <KPI title="Forecast anno" value={euro0(forecast.projectedAnnual)} subtitle="Proiezione" icon={Target} />
+            </section>
+            <div className="panel-grid two-one">
+              <div className="panel">
+                <div className="panel-header"><h3>Top 5 dealer</h3><span>Classifica sintetica</span></div>
+                <div className="list-stack">{topFiveDealers.map((d, i) => <div className="list-item" key={`exe-${d.name}`}><div><div className="list-title">#{i + 1} {d.name}</div><div className="list-subtitle">{d.statoDealer} · score {d.score}/100</div></div><div className="list-value">{euro0(d.erogato)}</div></div>)}</div>
+              </div>
+              <div className="panel">
+                <div className="panel-header"><h3>Alert urgenti</h3><span>Priorità alta</span></div>
+                <div className="list-stack">{alertsBySeverity.alta.slice(0, 5).map((a) => <div className="list-item" key={`exe-alert-${a.key}`}><div><div className="list-title">{a.dealer}</div><div className="list-subtitle">{a.tipo} · {a.dato}</div></div><span className="badge">{a.severity}</span></div>)}</div>
+              </div>
+            </div>
             <div className="panel-grid two-one">
               <div className="panel">
                 <div className="panel-header"><h3>{chartTitle}</h3><span>Importo finanziato per data liquidazione</span></div>
@@ -1912,6 +1927,8 @@ useEffect(() => {
             </div>
           </div>
         )}
+          </div>
+        </div>
       </div>
     </div>
   );

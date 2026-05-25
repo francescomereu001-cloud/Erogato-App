@@ -1574,7 +1574,7 @@ useEffect(() => {
             {comparisonYears.length > 0 && viewGranularity === 'monthly' && (
               <div className="panel">
                 <div className="panel-header"><h3>Confronto anno su anno</h3><span>{currentYear - 1} vs {currentYear}</span></div>
-                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparisonYears}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(currentYear - 1)} strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(currentYear)} strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparisonYears}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(currentYear - 1)} stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(currentYear)} stroke="#0ea5e9" strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
               </div>
             )}
 
@@ -1592,13 +1592,14 @@ useEffect(() => {
                       <YAxis />
                       <Tooltip formatter={(value: number) => euro(value)} />
                       <Legend />
-                      <Line type="monotone" dataKey="corrente" name={`${currentYear}`} strokeWidth={3} dot={false} />
-                      <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="annoScorso" name={`${currentYear - 1}`} strokeWidth={2} dot={false} />
+                      <Line type="monotone" dataKey="corrente" name={`${currentYear}`} stroke="#0ea5e9" strokeWidth={3} dot={false} />
+                      <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                      <Line type="monotone" dataKey="annoScorso" name={`${currentYear - 1}`} stroke="#8b5cf6" strokeWidth={2} dot={false} />
 <Line
   type="monotone"
   dataKey="meseMiglioreYtd"
   name={bestMonthYtd ? `Mese top YTD (${MONTHS_IT[bestMonthYtd - 1]})` : 'Mese top YTD'}
+  stroke="#22c55e"
   strokeWidth={2}
   dot={false}
 />
@@ -1606,6 +1607,7 @@ useEffect(() => {
   type="monotone"
   dataKey="mediaAnnoCorrente"
   name="Media anno corrente"
+  stroke="#ef4444"
   strokeWidth={2}
   dot={false}
 />

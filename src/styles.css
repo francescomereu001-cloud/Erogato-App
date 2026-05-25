@@ -199,8 +199,13 @@ button, input, select { font: inherit; }
 .chart { height: 320px; }
 .chart.tall { height: 420px; }
 
-.table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 16px; }
+.table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 16px; max-width: 100%; -webkit-overflow-scrolling: touch; touch-action: pan-x pinch-zoom; }
 table { width: 100%; border-collapse: collapse; min-width: 900px; }
+.table-wrap table { min-width: 900px; }
+@media (max-width: 768px) {
+  .table-wrap table { min-width: 760px; }
+}
+
 thead { background: #f4f8ff; }
 thead th { position: sticky; top: 0; z-index: 1; }
 th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 14px; text-align: left; }
@@ -303,7 +308,7 @@ tr:last-child td { border-bottom: none; }
 }
 
 @media (max-width: 768px) {
-  html, body { overflow-x: hidden; }
+  body { overflow-x: hidden; }
   .topbar { align-items: stretch; }
   .desktop-actions { display: none; }
   .mobile-actions-menu { display: block; }
@@ -318,8 +323,8 @@ tr:last-child td { border-bottom: none; }
   .kpi-icon { width: 34px; height: 34px; }
   .chart { height: 240px; }
   .chart.tall { height: 260px; }
-  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
-  .table-wrap::after { content: '⇆ scorri'; display: block; text-align: right; font-size: 11px; color: var(--muted); padding: 4px 10px 8px; }
+  .table-wrap { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; touch-action: pan-x pinch-zoom; padding-bottom: 2px; scrollbar-width: thin; }
+  .table-wrap::after { content: '⇆ scorri lateralmente'; display: block; text-align: right; font-size: 11px; color: var(--muted); padding: 4px 10px 8px; }
   .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 8px; background: rgba(255,255,255,.95); border-top: 1px solid var(--line); backdrop-filter: blur(8px); }
   .bottom-nav-item { border: 1px solid var(--line); background: #fff; border-radius: 12px; padding: 6px 2px; font-size: 11px; color: var(--muted); display: grid; gap: 2px; justify-items: center; }
   .bottom-nav-item.active { color: #fff; background: var(--primary); border-color: var(--primary); }

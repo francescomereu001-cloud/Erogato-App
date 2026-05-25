@@ -150,6 +150,8 @@ button, input, select { font: inherit; }
   background: var(--primary);
   border-color: var(--primary);
 }
+.dealer-row-clickable { cursor: pointer; }
+.dealer-row-clickable:hover { background: rgba(36, 88, 230, 0.08); }
 .imported-files { margin-top: 12px; color: var(--muted); font-size: 12px; }
 
 .kpi-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; margin-bottom: 18px; }

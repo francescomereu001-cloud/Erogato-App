@@ -29,6 +29,9 @@ import {
   Store,
   RefreshCw,
   Boxes,
+  ShieldAlert,
+  CircleCheck,
+  TriangleAlert,
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from "./supabase";
@@ -115,7 +118,8 @@ type SmartDealerRow = {
   currentMonthPratiche: number;
   previousMonthPratiche: number;
   growthPraticheAbs: number;
-  statoDealer: 'Top dealer' | 'In crescita' | 'In calo' | 'Da lavorare';
+  statoDealer: 'Top' | 'In crescita' | 'Da presidiare' | 'In calo' | 'Dormiente';
+  score: number;
 };
 
 type AlertSeverity = 'alta' | 'media' | 'bassa' | 'positiva';
@@ -655,7 +659,7 @@ function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: numb
         name: key, erogato: 0, pratiche: 0, ticketMedio: 0, provvigioni: 0,
         autoAmount: 0, posAmount: 0, autoPct: 0, posPct: 0,
         currentMonthErogato: 0, previousMonthErogato: 0, growthErogatoAbs: 0, growthErogatoPct: 0,
-        currentMonthPratiche: 0, previousMonthPratiche: 0, growthPraticheAbs: 0, statoDealer: 'Da lavorare',
+        currentMonthPratiche: 0, previousMonthPratiche: 0, growthPraticheAbs: 0, statoDealer: 'Da presidiare', score: 0,
       });
     }
     const item = map.get(key)!;
@@ -688,11 +692,19 @@ function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: numb
     row.growthPraticheAbs = row.currentMonthPratiche - row.previousMonthPratiche;
     row.growthErogatoPct = row.previousMonthErogato > 0 ? (row.growthErogatoAbs / row.previousMonthErogato) : (row.currentMonthErogato > 0 ? 1 : 0);
 
-    if (row.erogato >= maxErogato * 0.75 && row.growthErogatoPct >= 0.1) row.statoDealer = 'Top dealer';
-    else if (row.growthErogatoPct >= 0.2 || row.growthPraticheAbs >= 3) row.statoDealer = 'In crescita';
-    else if (row.growthErogatoPct <= -0.3) row.statoDealer = 'In calo';
-    else if (row.erogato < maxErogato * 0.25 || row.ticketMedio < avgTicket * 0.75) row.statoDealer = 'Da lavorare';
-    else row.statoDealer = 'In crescita';
+    const growthScore = Math.max(0, Math.min(20, (row.growthErogatoPct + 0.4) * 25));
+    const volumeScore = maxErogato > 0 ? Math.min(30, (row.erogato / maxErogato) * 30) : 0;
+    const ticketScore = avgTicket > 0 ? Math.max(0, Math.min(15, (row.ticketMedio / avgTicket) * 15)) : 0;
+    const activityScore = Math.min(20, row.currentMonthPratiche * 2);
+    const mixScore = row.autoPct > 0.2 && row.posPct > 0.2 ? 7 : 3;
+    const continuityScore = row.previousMonthPratiche > 0 && row.currentMonthPratiche > 0 ? 8 : row.currentMonthPratiche > 0 ? 5 : 0;
+    row.score = Math.round(Math.max(0, Math.min(100, growthScore + volumeScore + ticketScore + activityScore + mixScore + continuityScore)));
+
+    if (row.currentMonthPratiche === 0 && row.previousMonthPratiche === 0) row.statoDealer = 'Dormiente';
+    else if (row.score >= 78) row.statoDealer = 'Top';
+    else if (row.growthErogatoPct >= 0.15) row.statoDealer = 'In crescita';
+    else if (row.growthErogatoPct <= -0.25) row.statoDealer = 'In calo';
+    else row.statoDealer = 'Da presidiare';
     return row;
   });
 }
@@ -830,7 +842,7 @@ function App() {
   const [policyMonthlyMetrics, setPolicyMonthlyMetrics] = useState<PolicyMonthlyMetric[]>([]);
   const [importedFiles, setImportedFiles] = useState<string[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [tab, setTab] = useState<'overview' | 'products' | 'forecast' | 'dealers' | 'subagenti' | 'portfolio' | 'data'>('overview');
+  const [tab, setTab] = useState<'executive' | 'focus' | 'forecast' | 'intelligence' | 'alerts' | 'products' | 'subagenti' | 'portfolio' | 'data'>('executive');
   const [search, setSearch] = useState('');
   const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
   const [dealerFilter, setDealerFilter] = useState('ALL');
@@ -1358,6 +1370,27 @@ useEffect(() => {
   const currentMonthIndex = currentYear === now.getFullYear() ? now.getMonth() + 1 : fallbackCurrentMonth;
   const currentMonthCard = monthlyData[currentMonthIndex - 1];
   const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
+  const previousYearSameMonth = monthSeriesFromRows(rows, currentYear - 1)[currentMonthIndex - 1];
+  const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : 0;
+  const topFiveDealers = smartDealerTable.slice(0, 5);
+  const alertsBySeverity = useMemo(() => ({
+    alta: dealerAlerts.filter((a) => a.severity === 'alta'),
+    media: dealerAlerts.filter((a) => a.severity === 'media'),
+    bassa: dealerAlerts.filter((a) => a.severity === 'bassa'),
+    positiva: dealerAlerts.filter((a) => a.severity === 'positiva'),
+  }), [dealerAlerts]);
+  const dataQuality = useMemo(() => {
+    const duplicates = new Map<string, number>();
+    rows.forEach((r) => duplicates.set(r.stableIdentity, (duplicates.get(r.stableIdentity) || 0) + 1));
+    return {
+      dealerND: rows.filter((r) => !r.dealer || r.dealer === 'N/D').length,
+      prodottoMancante: rows.filter((r) => !r.prodottoCode).length,
+      provvigioneZero: rows.filter((r) => r.provvigione === 0).length,
+      importiAnomali: rows.filter((r) => r.importoFinanziato > 200000 || r.importoFinanziato < 300).length,
+      dateMancanti: rows.filter((r) => !r.dateISO).length,
+      duplicate: Array.from(duplicates.values()).filter((v) => v > 1).length,
+    };
+  }, [rows]);
 
   return (
     <div className="app-shell">
@@ -1452,10 +1485,12 @@ useEffect(() => {
 
         <nav className="tabs">
           {[
-            ['overview', 'Overview'],
+            ['executive', 'Executive'],
+            ['focus', 'Focus Mese'],
             ['products', 'Prodotti'],
             ['forecast', 'Previsione'],
-            ['dealers', 'Dealer'],
+            ['intelligence', 'Dealer Intelligence'],
+            ['alerts', 'Alert Center'],
             ['subagenti', 'Filiali'],
             ['portfolio', 'Portafoglio'],
             ['data', 'Dati'],
@@ -1464,7 +1499,7 @@ useEffect(() => {
           ))}
         </nav>
 
-        {tab === 'overview' && (
+        {tab === 'executive' && (
           <div className="stack">
             <div className="panel-grid two-one">
               <div className="panel">
@@ -1701,7 +1736,7 @@ useEffect(() => {
           </div>
         )}
 
-        {tab === 'dealers' && (
+        {tab === 'intelligence' && (
           <div className="stack">
             <div className="panel-grid two-one">
               <div className="panel">
@@ -1736,14 +1771,48 @@ useEffect(() => {
               </div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Dealer</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th className="right">AUTO</th><th className="right">POS</th><th className="right">% AUTO/POS</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
+                  <thead><tr><th>Dealer</th><th className="right">Score</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th className="right">AUTO</th><th className="right">POS</th><th className="right">% AUTO/POS</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
                   <tbody>
                     {smartDealerTable.map((row) => (
-                      <tr key={row.name}><td>{row.name}</td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td className="right">{euro(row.autoAmount)}</td><td className="right">{euro(row.posAmount)}</td><td className="right">{pct(row.autoPct)} / {pct(row.posPct)}</td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
+                      <tr key={row.name}><td>{row.name}</td><td className="right"><span className="badge">{row.score}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td className="right">{euro(row.autoAmount)}</td><td className="right">{euro(row.posAmount)}</td><td className="right">{pct(row.autoPct)} / {pct(row.posPct)}</td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        )}
+        {tab === 'alerts' && (
+          <div className="stack">
+            {(['alta', 'media', 'bassa', 'positiva'] as AlertSeverity[]).map((sev) => (
+              <div className="panel" key={sev}>
+                <div className="panel-header"><h3>Alert {sev}</h3><span>{alertsBySeverity[sev].length} elementi</span></div>
+                <div className="list-stack">
+                  {alertsBySeverity[sev].map((a) => (
+                    <div key={a.key} className="list-item">
+                      <div>
+                        <div className="list-title">{sev === 'alta' ? <ShieldAlert className="inline-icon" /> : sev === 'positiva' ? <CircleCheck className="inline-icon" /> : <TriangleAlert className="inline-icon" />} {a.dealer} · {a.tipo}</div>
+                        <div className="list-subtitle">{a.descrizione} · {a.dato}</div>
+                      </div>
+                      <div className="badge">{a.suggerimento}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {tab === 'focus' && (
+          <div className="stack">
+            <div className="mini-grid four">
+              <div className="mini-card"><div className="mini-label">Focus mese</div><div className="mini-value">{MONTHS_IT[referenceMonth - 1]}</div></div>
+              <div className="mini-card"><div className="mini-label">Erogato mese</div><div className="mini-value">{euro0(currentMonthCard?.erogato || 0)}</div></div>
+              <div className="mini-card"><div className="mini-label">Vs anno precedente</div><div className="mini-value">{pct(monthVsPrevYear)}</div></div>
+              <div className="mini-card"><div className="mini-label">Dealer top 5</div><div className="mini-value">{num(topFiveDealers.length)}</div></div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Top dealer del mese</h3><span>Riepilogo operativo</span></div>
+              <div className="list-stack">{topFiveDealers.map((d, i) => <div className="list-item" key={d.name}><div><div className="list-title">#{i + 1} {d.name}</div><div className="list-subtitle">{d.statoDealer} · {num(d.currentMonthPratiche)} pratiche · score {d.score}/100</div></div><div className="list-value">{euro0(d.currentMonthErogato)}</div></div>)}</div>
             </div>
           </div>
         )}
@@ -1818,6 +1887,12 @@ useEffect(() => {
 
         {tab === 'data' && (
           <div className="stack">
+            <div className="mini-grid four">
+              <div className="mini-card"><div className="mini-label">Dealer N/D</div><div className="mini-value">{num(dataQuality.dealerND)}</div></div>
+              <div className="mini-card"><div className="mini-label">Prodotto mancante</div><div className="mini-value">{num(dataQuality.prodottoMancante)}</div></div>
+              <div className="mini-card"><div className="mini-label">Provvigione zero</div><div className="mini-value">{num(dataQuality.provvigioneZero)}</div></div>
+              <div className="mini-card"><div className="mini-label">Possibili duplicati</div><div className="mini-value">{num(dataQuality.duplicate)}</div></div>
+            </div>
             <div className="panel">
               <div className="panel-header"><h3>Impostazioni forecast</h3><span>Target annuale e stagionalità</span></div>
               <div className="settings-grid">

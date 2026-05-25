@@ -213,6 +213,15 @@ tr:last-child td { border-bottom: none; }
 .progress { width: 100%; height: 12px; border-radius: 999px; background: #ecf1f8; overflow: hidden; margin-bottom: 12px; }
 .progress-bar { height: 100%; background: linear-gradient(90deg, var(--primary), #5a84ff); }
 .badge { display: inline-flex; align-items: center; border-radius: 999px; background: #eef3ff; color: var(--primary); padding: 6px 10px; font-size: 12px; font-weight: 600; }
+.mode-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.alert-card { border-left: 4px solid var(--line-strong); }
+.alert-card.alta { border-left-color: #cb3a3a; }
+.alert-card.media { border-left-color: #d97706; }
+.alert-card.bassa { border-left-color: #0ea5e9; }
+.alert-card.positiva { border-left-color: #16a34a; }
+.score-badge { background: #e8f5ff; color: #0b5cad; font-weight: 700; }
+.topbar-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.topbar-chip { background: #fff; border: 1px solid var(--line-strong); border-radius: 999px; padding: 6px 10px; font-size: 12px; color: var(--muted); }
 
 .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 14px; margin-bottom: 16px; }
 .readonly { margin-top: 6px; border: 1px solid var(--line-strong); background: #f7f9fd; border-radius: 14px; padding: 11px 14px; }
@@ -223,6 +232,7 @@ tr:last-child td { border-bottom: none; }
 @media (max-width: 1200px) {
   .kpi-grid { grid-template-columns: repeat(3, 1fr); }
   .mini-grid.four { grid-template-columns: repeat(2, 1fr); }
+  .mode-cards { grid-template-columns: repeat(2, 1fr); }
   .months-grid { grid-template-columns: repeat(3, 1fr); }
   .filters-top { grid-template-columns: 1fr; }
   .filters-headline { flex-direction: column; align-items: flex-start; }
@@ -236,6 +246,7 @@ tr:last-child td { border-bottom: none; }
   .banner-grid, .panel-grid.two-one, .kpi-grid { grid-template-columns: 1fr; }
   .filters-grid, .settings-grid, .months-grid { grid-template-columns: 1fr; }
   .mini-grid.four { grid-template-columns: 1fr; }
+  .mode-cards { grid-template-columns: 1fr; }
   .panel, .filters-card, .kpi-card, .mini-card, .banner-card { border-radius: 16px; }
   .chart { height: 280px; }
   .chart.tall { height: 320px; }

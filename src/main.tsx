@@ -826,19 +826,6 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
 
 function KPI({ title, value, subtitle, icon: Icon, className = '' }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }>; className?: string }) {
 
-  const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
-    ['executive', 'Executive', Home],
-    ['focus', 'Focus', CalendarDays],
-    ['intelligence', 'Dealer', BriefcaseBusiness],
-    ['alerts', 'Alert', Siren],
-  ];
-  const secondaryTabs: Array<[typeof tab, string, typeof Home]> = [
-    ['products', 'Prodotti', Package],
-    ['forecast', 'Forecast & Target', Target],
-    ['subagenti', 'Filiali', Building2],
-    ['portfolio', 'Portafoglio', Boxes],
-    ['data', 'Dati / Impostazioni', Settings],
-  ];
 
   return (
     <div className={`kpi-card ${className}`.trim()}>
@@ -912,6 +899,20 @@ function App() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
+    ['executive', 'Executive', Home],
+    ['focus', 'Focus', CalendarDays],
+    ['intelligence', 'Dealer', BriefcaseBusiness],
+    ['alerts', 'Alert', Siren],
+  ];
+  const secondaryTabs: Array<[typeof tab, string, typeof Home]> = [
+    ['products', 'Prodotti', Package],
+    ['forecast', 'Forecast & Target', Target],
+    ['subagenti', 'Filiali', Building2],
+    ['portfolio', 'Portafoglio', Boxes],
+    ['data', 'Dati / Impostazioni', Settings],
+  ];
 
   const resetFilters = () => {
     setSearch('');

@@ -128,6 +128,10 @@ type SmartDealerRow = {
   growthPraticheAbs: number;
   statoDealer: 'Top' | 'In crescita' | 'Da presidiare' | 'In calo' | 'Dormiente';
   score: number;
+  dealerType: 'AUTO' | 'POS/CASA' | 'MISTO' | 'DA VERIFICARE';
+  activeMonthsCount: number;
+  continuityLabel: string;
+  suggestedAction: 'Consolidare' | 'Presidiare' | 'Recuperare' | 'Riattivare' | 'Sviluppare ticket' | 'Contattare' | 'Monitorare';
 };
 
 type AlertSeverity = 'alta' | 'media' | 'bassa' | 'positiva';
@@ -660,14 +664,18 @@ function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: numb
   const current = monthWindow(year, referenceMonth, 0);
   const previous = monthWindow(year, referenceMonth, -1);
   const map = new Map<string, SmartDealerRow>();
+  const dealerActiveMonths = new Map<string, Set<number>>();
   rows.filter((row) => row.year === year).forEach((row) => {
     const key = row.dealer || 'N/D';
+    if (!dealerActiveMonths.has(key)) dealerActiveMonths.set(key, new Set<number>());
+    dealerActiveMonths.get(key)!.add(row.month);
     if (!map.has(key)) {
       map.set(key, {
         name: key, erogato: 0, pratiche: 0, ticketMedio: 0, provvigioni: 0,
         autoAmount: 0, posAmount: 0, autoPct: 0, posPct: 0,
         currentMonthErogato: 0, previousMonthErogato: 0, growthErogatoAbs: 0, growthErogatoPct: 0,
         currentMonthPratiche: 0, previousMonthPratiche: 0, growthPraticheAbs: 0, statoDealer: 'Da presidiare', score: 0,
+        dealerType: 'DA VERIFICARE', activeMonthsCount: 0, continuityLabel: '-', suggestedAction: 'Monitorare',
       });
     }
     const item = map.get(key)!;
@@ -696,6 +704,10 @@ function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: numb
     row.ticketMedio = row.pratiche ? row.erogato / row.pratiche : 0;
     row.autoPct = totalMix ? row.autoAmount / totalMix : 0;
     row.posPct = totalMix ? row.posAmount / totalMix : 0;
+    if (row.autoPct >= 0.8) row.dealerType = 'AUTO';
+    else if (row.posPct >= 0.8) row.dealerType = 'POS/CASA';
+    else if (row.autoPct > 0.2 && row.posPct > 0.2) row.dealerType = 'MISTO';
+    else row.dealerType = 'DA VERIFICARE';
     row.growthErogatoAbs = row.currentMonthErogato - row.previousMonthErogato;
     row.growthPraticheAbs = row.currentMonthPratiche - row.previousMonthPratiche;
     row.growthErogatoPct = row.previousMonthErogato > 0 ? (row.growthErogatoAbs / row.previousMonthErogato) : (row.currentMonthErogato > 0 ? 1 : 0);
@@ -713,6 +725,25 @@ function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: numb
     else if (row.growthErogatoPct >= 0.15) row.statoDealer = 'In crescita';
     else if (row.growthErogatoPct <= -0.25) row.statoDealer = 'In calo';
     else row.statoDealer = 'Da presidiare';
+
+    const monthsSet = dealerActiveMonths.get(row.name) || new Set<number>();
+    const monthsUpToCurrent = Array.from(monthsSet).filter((m) => m <= referenceMonth);
+    row.activeMonthsCount = monthsUpToCurrent.length;
+    const lastActiveMonth = monthsUpToCurrent.length ? Math.max(...monthsUpToCurrent) : 0;
+    if (row.currentMonthPratiche === 0 && lastActiveMonth > 0) {
+      const delta = Math.max(1, referenceMonth - lastActiveMonth);
+      row.continuityLabel = delta === 1 ? 'Fermo mese corrente' : `Fermo da ${delta} mesi`;
+    } else {
+      row.continuityLabel = `${row.activeMonthsCount}/${referenceMonth} mesi attivo`;
+    }
+
+    if (row.ticketMedio < avgTicket * 0.7) row.suggestedAction = 'Sviluppare ticket';
+    else if (row.statoDealer === 'Top') row.suggestedAction = 'Consolidare';
+    else if (row.statoDealer === 'In crescita') row.suggestedAction = 'Presidiare';
+    else if (row.statoDealer === 'In calo') row.suggestedAction = 'Recuperare';
+    else if (row.statoDealer === 'Dormiente') row.suggestedAction = 'Riattivare';
+    else if (row.score < 35) row.suggestedAction = 'Contattare';
+    else row.suggestedAction = 'Monitorare';
     return row;
   });
 }
@@ -1763,10 +1794,10 @@ useEffect(() => {
               </div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Dealer</th><th className="right">Score</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th className="right">AUTO</th><th className="right">POS</th><th className="right">% AUTO/POS</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
+                  <thead><tr><th>Dealer</th><th className="right">Score</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th>Tipo dealer</th><th>Continuità</th><th>Azione consigliata</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
                   <tbody>
                     {smartDealerTable.map((row) => (
-                      <tr key={row.name}><td>{row.name}</td><td className="right"><span className="badge">{row.score}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td className="right">{euro(row.autoAmount)}</td><td className="right">{euro(row.posAmount)}</td><td className="right">{pct(row.autoPct)} / {pct(row.posPct)}</td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
+                      <tr key={row.name}><td>{row.name}</td><td className="right"><span className="badge">{row.score}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td><span className="badge">{row.dealerType}</span></td><td><span className="badge">{row.continuityLabel}</span></td><td><span className="badge">{row.suggestedAction}</span></td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
                     ))}
                   </tbody>
                 </table>

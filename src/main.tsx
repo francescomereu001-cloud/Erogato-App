@@ -791,9 +791,9 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
   return { annualTarget: target, projectedAnnual, ytd, gapToTarget: target ? projectedAnnual - target : 0, monthlyForecast };
 }
 
-function KPI({ title, value, subtitle, icon: Icon }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }> }) {
+function KPI({ title, value, subtitle, icon: Icon, className = '' }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }>; className?: string }) {
   return (
-    <div className="kpi-card">
+    <div className={`kpi-card ${className}`.trim()}>
       <div>
         <div className="kpi-title">{title}</div>
         <div className="kpi-value">{value}</div>
@@ -1485,7 +1485,6 @@ useEffect(() => {
             <button className={`pill ${viewGranularity === 'monthly' ? 'active' : ''}`} onClick={() => setViewGranularity('monthly')}>Vista Mensile</button>
             <button className={`pill ${yearFilter === String(currentYear) ? 'active' : ''}`} onClick={() => setYearFilter(String(currentYear))}>Anno corrente</button>
           </div>
-          {importedFiles.length > 0 && <div className="imported-files">File importati: {importedFiles.join(', ')}</div>}
         </section>
 
         <section className="kpi-grid">
@@ -1499,12 +1498,12 @@ useEffect(() => {
         {tab === 'executive' && (
           <div className="stack">
             <section className="dashboard-grid">
-              <KPI title="Erogato anno" value={euro0(kpis.erogato)} subtitle={`${currentYear}`} icon={Euro} />
-              <KPI title="Erogato mese corrente" value={euro0(currentMonthCard?.erogato || 0)} subtitle={currentMonthLabel} icon={CalendarDays} />
+              <KPI title="Erogato mese corrente" value={euro0(currentMonthCard?.erogato || 0)} subtitle={currentMonthLabel} icon={CalendarDays} className="kpi-card--highlight" />
               <KPI title="Pratiche" value={num(kpis.pratiche)} subtitle="Totale pratiche" icon={Users} />
               <KPI title="Ticket medio" value={euro0(kpis.ticketMedio)} subtitle="Importo medio" icon={TrendingUp} />
               <KPI title="Provvigioni" value={euro0(kpis.provvigioni)} subtitle="Anno selezionato" icon={Wallet} />
               <KPI title="Forecast anno" value={euro0(forecast.projectedAnnual)} subtitle="Proiezione" icon={Target} />
+              <KPI title="Dealer attivi" value={num(kpis.dealerCount)} subtitle="Nel filtro corrente" icon={Users} />
             </section>
             <div className="panel-grid two-one">
               <div className="panel">
@@ -1923,6 +1922,16 @@ useEffect(() => {
                 <div>• polizze: <strong>REPORT POLIZZE</strong> quando presente, altrimenti colonna database</div>
                 <div>• vista prodotto: <strong>EROGATO PER PRODOTTO</strong> quando presente, altrimenti classificazione da codice prodotto</div>
                 <div>• provvigioni: <strong>PROVV</strong> oppure formula automatica (31 = 0,825%; resto = 0,55%)</div>
+              </div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>File importati</h3><span>Storico file caricati nella sessione archivio</span></div>
+              <div className="list-stack">
+                {importedFiles.length ? importedFiles.map((file) => (
+                  <div key={file} className="list-item">
+                    <div className="list-title">{file}</div>
+                  </div>
+                )) : <div className="muted">Nessun file importato.</div>}
               </div>
             </div>
           </div>

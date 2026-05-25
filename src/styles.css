@@ -154,6 +154,11 @@ button, input, select { font: inherit; }
 
 .kpi-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; margin-bottom: 18px; }
 .kpi-card { padding: 18px; display: flex; justify-content: space-between; gap: 12px; }
+.kpi-card--highlight {
+  background: linear-gradient(135deg, #e8f0ff 0%, #dce8ff 100%);
+  border-color: #c9d8fb;
+}
+.kpi-card--highlight .kpi-icon { background: #2458e6; color: #fff; }
 .kpi-title { font-size: 13px; color: var(--muted); }
 .kpi-value { font-size: clamp(1.3rem, 2.8vw, 1.75rem); font-weight: 700; line-height: 1.1; margin-top: 8px; }
 .kpi-subtitle { font-size: 12px; color: var(--muted); margin-top: 8px; }

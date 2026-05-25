@@ -29,6 +29,17 @@ import {
   Store,
   RefreshCw,
   Boxes,
+  ShieldAlert,
+  CircleCheck,
+  TriangleAlert,
+  Home,
+  CalendarDays,
+  Siren,
+  Package,
+  Building2,
+  BriefcaseBusiness,
+  Settings,
+  Menu,
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from "./supabase";
@@ -115,7 +126,12 @@ type SmartDealerRow = {
   currentMonthPratiche: number;
   previousMonthPratiche: number;
   growthPraticheAbs: number;
-  statoDealer: 'Top dealer' | 'In crescita' | 'In calo' | 'Da lavorare';
+  statoDealer: 'Top' | 'In crescita' | 'Da presidiare' | 'In calo' | 'Dormiente';
+  score: number;
+  dealerType: 'AUTO' | 'POS/CASA' | 'MISTO' | 'DA VERIFICARE';
+  activeMonthsCount: number;
+  continuityLabel: string;
+  suggestedAction: 'Consolidare' | 'Presidiare' | 'Recuperare' | 'Riattivare' | 'Sviluppare ticket' | 'Contattare' | 'Monitorare';
 };
 
 type AlertSeverity = 'alta' | 'media' | 'bassa' | 'positiva';
@@ -648,14 +664,18 @@ function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: numb
   const current = monthWindow(year, referenceMonth, 0);
   const previous = monthWindow(year, referenceMonth, -1);
   const map = new Map<string, SmartDealerRow>();
+  const dealerActiveMonths = new Map<string, Set<number>>();
   rows.filter((row) => row.year === year).forEach((row) => {
     const key = row.dealer || 'N/D';
+    if (!dealerActiveMonths.has(key)) dealerActiveMonths.set(key, new Set<number>());
+    dealerActiveMonths.get(key)!.add(row.month);
     if (!map.has(key)) {
       map.set(key, {
         name: key, erogato: 0, pratiche: 0, ticketMedio: 0, provvigioni: 0,
         autoAmount: 0, posAmount: 0, autoPct: 0, posPct: 0,
         currentMonthErogato: 0, previousMonthErogato: 0, growthErogatoAbs: 0, growthErogatoPct: 0,
-        currentMonthPratiche: 0, previousMonthPratiche: 0, growthPraticheAbs: 0, statoDealer: 'Da lavorare',
+        currentMonthPratiche: 0, previousMonthPratiche: 0, growthPraticheAbs: 0, statoDealer: 'Da presidiare', score: 0,
+        dealerType: 'DA VERIFICARE', activeMonthsCount: 0, continuityLabel: '-', suggestedAction: 'Monitorare',
       });
     }
     const item = map.get(key)!;
@@ -684,15 +704,46 @@ function buildSmartDealerRows(rows: AppRow[], year: number, referenceMonth: numb
     row.ticketMedio = row.pratiche ? row.erogato / row.pratiche : 0;
     row.autoPct = totalMix ? row.autoAmount / totalMix : 0;
     row.posPct = totalMix ? row.posAmount / totalMix : 0;
+    if (row.autoPct >= 0.8) row.dealerType = 'AUTO';
+    else if (row.posPct >= 0.8) row.dealerType = 'POS/CASA';
+    else if (row.autoPct > 0.2 && row.posPct > 0.2) row.dealerType = 'MISTO';
+    else row.dealerType = 'DA VERIFICARE';
     row.growthErogatoAbs = row.currentMonthErogato - row.previousMonthErogato;
     row.growthPraticheAbs = row.currentMonthPratiche - row.previousMonthPratiche;
     row.growthErogatoPct = row.previousMonthErogato > 0 ? (row.growthErogatoAbs / row.previousMonthErogato) : (row.currentMonthErogato > 0 ? 1 : 0);
 
-    if (row.erogato >= maxErogato * 0.75 && row.growthErogatoPct >= 0.1) row.statoDealer = 'Top dealer';
-    else if (row.growthErogatoPct >= 0.2 || row.growthPraticheAbs >= 3) row.statoDealer = 'In crescita';
-    else if (row.growthErogatoPct <= -0.3) row.statoDealer = 'In calo';
-    else if (row.erogato < maxErogato * 0.25 || row.ticketMedio < avgTicket * 0.75) row.statoDealer = 'Da lavorare';
-    else row.statoDealer = 'In crescita';
+    const growthScore = Math.max(0, Math.min(20, (row.growthErogatoPct + 0.4) * 25));
+    const volumeScore = maxErogato > 0 ? Math.min(30, (row.erogato / maxErogato) * 30) : 0;
+    const ticketScore = avgTicket > 0 ? Math.max(0, Math.min(15, (row.ticketMedio / avgTicket) * 15)) : 0;
+    const activityScore = Math.min(20, row.currentMonthPratiche * 2);
+    const mixScore = row.autoPct > 0.2 && row.posPct > 0.2 ? 7 : 3;
+    const continuityScore = row.previousMonthPratiche > 0 && row.currentMonthPratiche > 0 ? 8 : row.currentMonthPratiche > 0 ? 5 : 0;
+    row.score = Math.round(Math.max(0, Math.min(100, growthScore + volumeScore + ticketScore + activityScore + mixScore + continuityScore)));
+
+    if (row.currentMonthPratiche === 0 && row.previousMonthPratiche === 0) row.statoDealer = 'Dormiente';
+    else if (row.score >= 78) row.statoDealer = 'Top';
+    else if (row.growthErogatoPct >= 0.15) row.statoDealer = 'In crescita';
+    else if (row.growthErogatoPct <= -0.25) row.statoDealer = 'In calo';
+    else row.statoDealer = 'Da presidiare';
+
+    const monthsSet = dealerActiveMonths.get(row.name) || new Set<number>();
+    const monthsUpToCurrent = Array.from(monthsSet).filter((m) => m <= referenceMonth);
+    row.activeMonthsCount = monthsUpToCurrent.length;
+    const lastActiveMonth = monthsUpToCurrent.length ? Math.max(...monthsUpToCurrent) : 0;
+    if (row.currentMonthPratiche === 0 && lastActiveMonth > 0) {
+      const delta = Math.max(1, referenceMonth - lastActiveMonth);
+      row.continuityLabel = delta === 1 ? 'Fermo mese corrente' : `Fermo da ${delta} mesi`;
+    } else {
+      row.continuityLabel = `${row.activeMonthsCount}/${referenceMonth} mesi attivo`;
+    }
+
+    if (row.ticketMedio < avgTicket * 0.7) row.suggestedAction = 'Sviluppare ticket';
+    else if (row.statoDealer === 'Top') row.suggestedAction = 'Consolidare';
+    else if (row.statoDealer === 'In crescita') row.suggestedAction = 'Presidiare';
+    else if (row.statoDealer === 'In calo') row.suggestedAction = 'Recuperare';
+    else if (row.statoDealer === 'Dormiente') row.suggestedAction = 'Riattivare';
+    else if (row.score < 35) row.suggestedAction = 'Contattare';
+    else row.suggestedAction = 'Monitorare';
     return row;
   });
 }
@@ -771,9 +822,9 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
   return { annualTarget: target, projectedAnnual, ytd, gapToTarget: target ? projectedAnnual - target : 0, monthlyForecast };
 }
 
-function KPI({ title, value, subtitle, icon: Icon }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }> }) {
+function KPI({ title, value, subtitle, icon: Icon, className = '' }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }>; className?: string }) {
   return (
-    <div className="kpi-card">
+    <div className={`kpi-card ${className}`.trim()}>
       <div>
         <div className="kpi-title">{title}</div>
         <div className="kpi-value">{value}</div>
@@ -830,7 +881,7 @@ function App() {
   const [policyMonthlyMetrics, setPolicyMonthlyMetrics] = useState<PolicyMonthlyMetric[]>([]);
   const [importedFiles, setImportedFiles] = useState<string[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [tab, setTab] = useState<'overview' | 'products' | 'forecast' | 'dealers' | 'subagenti' | 'portfolio' | 'data'>('overview');
+  const [tab, setTab] = useState<'executive' | 'focus' | 'forecast' | 'intelligence' | 'alerts' | 'products' | 'subagenti' | 'portfolio' | 'data'>('executive');
   const [search, setSearch] = useState('');
   const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
   const [dealerFilter, setDealerFilter] = useState('ALL');
@@ -1358,53 +1409,79 @@ useEffect(() => {
   const currentMonthIndex = currentYear === now.getFullYear() ? now.getMonth() + 1 : fallbackCurrentMonth;
   const currentMonthCard = monthlyData[currentMonthIndex - 1];
   const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
+  const previousYearSameMonth = monthSeriesFromRows(rows, currentYear - 1)[currentMonthIndex - 1];
+  const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : 0;
+  const topFiveDealers = smartDealerTable.slice(0, 5);
+  const alertsBySeverity = useMemo(() => ({
+    alta: dealerAlerts.filter((a) => a.severity === 'alta'),
+    media: dealerAlerts.filter((a) => a.severity === 'media'),
+    bassa: dealerAlerts.filter((a) => a.severity === 'bassa'),
+    positiva: dealerAlerts.filter((a) => a.severity === 'positiva'),
+  }), [dealerAlerts]);
+  const dataQuality = useMemo(() => {
+    const duplicates = new Map<string, number>();
+    rows.forEach((r) => duplicates.set(r.stableIdentity, (duplicates.get(r.stableIdentity) || 0) + 1));
+    return {
+      dealerND: rows.filter((r) => !r.dealer || r.dealer === 'N/D').length,
+      prodottoMancante: rows.filter((r) => !r.prodottoCode).length,
+      provvigioneZero: rows.filter((r) => r.provvigione === 0).length,
+      importiAnomali: rows.filter((r) => r.importoFinanziato > 200000 || r.importoFinanziato < 300).length,
+      dateMancanti: rows.filter((r) => !r.dateISO).length,
+      duplicate: Array.from(duplicates.values()).filter((v) => v > 1).length,
+    };
+  }, [rows]);
+  const sectionTitles: Record<typeof tab, string> = {
+    executive: 'Executive Dashboard',
+    focus: 'Focus Mese',
+    intelligence: 'Dealer Intelligence',
+    alerts: 'Alert Center',
+    products: 'Prodotti',
+    forecast: 'Forecast & Target',
+    subagenti: 'Filiali',
+    portfolio: 'Portafoglio',
+    data: 'Dati / Impostazioni',
+  };
 
   return (
     <div className="app-shell">
-      <div className="page">
-        <header className="hero">
-          <div>
-            <h1>Dealer Erogato App</h1>
-            <p>Dashboard per erogato, forecast, dealer, filiali e prodotto. La data di riferimento è sempre <strong>DATA_LIQUIDAZIONE</strong>.</p>
-          </div>
-          <div className="hero-actions">
-            <label className="action-button primary">
-              <Upload className="icon" />
-              <span>{uploading ? 'Importazione...' : 'Carica Excel'}</span>
-              <input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} />
-            </label>
-            <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
-            <label className="action-button">
-              <RefreshCw className="icon" />
-              <span>Importa backup</span>
-              <input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} />
-            </label>
-            <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
-          </div>
-        </header>
-
-        <section className="banner-grid">
-          <div className="banner-card info">
-            <Database className="icon large" />
+      <div className="main-layout">
+        <aside className="sidebar">
+          <div className="sidebar-brand">Dealer Erogato App</div>
+          <div className="mobile-nav"><Menu className="icon" /> Navigazione</div>
+          {[
+            ['executive', 'Executive', Home],
+            ['focus', 'Focus Mese', CalendarDays],
+            ['intelligence', 'Dealer Intelligence', BriefcaseBusiness],
+            ['alerts', 'Alert Center', Siren],
+            ['products', 'Prodotti', Package],
+            ['forecast', 'Forecast & Target', Target],
+            ['subagenti', 'Filiali', Building2],
+            ['portfolio', 'Portafoglio', Boxes],
+            ['data', 'Dati / Impostazioni', Settings],
+          ].map(([key, label, Icon]) => (
+            <button key={key} className={`sidebar-item ${tab === key ? 'active' : ''}`} onClick={() => setTab(key as typeof tab)}>
+              <Icon className="icon" /> <span>{label}</span>
+            </button>
+          ))}
+        </aside>
+        <div className="main-area">
+          <header className="topbar">
             <div>
-              <div className="banner-title">{dataSourceMode === 'supabase' ? 'Archivio database' : dataSourceMode === 'local' ? 'Archivio locale' : 'Archivio'}</div>
-              <div className="banner-value">{num(rows.length)} pratiche</div>
-              <div className="banner-text">{dataSourceMode === 'supabase'
-                ? 'I dati vengono letti da Supabase e si aggiornano a ogni nuovo caricamento.'
-                : dataSourceMode === 'local'
-                  ? 'Fallback locale attivo. Carica o importa un backup se il database non è disponibile.'
-                  : 'Nessun dato disponibile. Carica un export Excel o importa un backup.'}</div>
+              <div className="topbar-title">{sectionTitles[tab]}</div>
+              <div className="topbar-meta">
+                <span className="topbar-chip">Anno: {currentYear}</span>
+                <span className="topbar-chip">Fonte: {dataSourceMode === 'supabase' ? 'Supabase' : dataSourceMode === 'local' ? 'Locale' : 'Vuoto'}</span>
+                <span className="topbar-chip">Pratiche: {num(rows.length)}</span>
+              </div>
             </div>
-          </div>
-          <div className="banner-card success">
-            <Target className="icon large" />
-            <div>
-              <div className="banner-title">Erogato {currentMonthLabel} {currentYear}</div>
-              <div className="banner-value">{currentMonthCard ? euro(currentMonthCard.erogato) : '-'}</div>
-              <div className="banner-text">Il banner si aggiorna automaticamente sul mese corrente dell'anno selezionato.</div>
+            <div className="hero-actions">
+              <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Carica Excel'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
+              <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
+              <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} /></label>
+              <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
             </div>
-          </div>
-        </section>
+          </header>
+          <div className="content-area">
 
         <section className="filters-card">
           <div className="filters-headline">
@@ -1439,7 +1516,6 @@ useEffect(() => {
             <button className={`pill ${viewGranularity === 'monthly' ? 'active' : ''}`} onClick={() => setViewGranularity('monthly')}>Vista Mensile</button>
             <button className={`pill ${yearFilter === String(currentYear) ? 'active' : ''}`} onClick={() => setYearFilter(String(currentYear))}>Anno corrente</button>
           </div>
-          {importedFiles.length > 0 && <div className="imported-files">File importati: {importedFiles.join(', ')}</div>}
         </section>
 
         <section className="kpi-grid">
@@ -1450,22 +1526,26 @@ useEffect(() => {
           <KPI title="Forecast anno" value={euro0(forecast.projectedAnnual)} subtitle={forecast.annualTarget ? `Target ${euro0(forecast.annualTarget)}` : 'Target non impostato'} icon={Target} />
         </section>
 
-        <nav className="tabs">
-          {[
-            ['overview', 'Overview'],
-            ['products', 'Prodotti'],
-            ['forecast', 'Previsione'],
-            ['dealers', 'Dealer'],
-            ['subagenti', 'Filiali'],
-            ['portfolio', 'Portafoglio'],
-            ['data', 'Dati'],
-          ].map(([key, label]) => (
-            <button key={key} className={`tab ${tab === key ? 'active' : ''}`} onClick={() => setTab(key as typeof tab)}>{label}</button>
-          ))}
-        </nav>
-
-        {tab === 'overview' && (
+        {tab === 'executive' && (
           <div className="stack">
+            <section className="dashboard-grid">
+              <KPI title="Erogato mese corrente" value={euro0(currentMonthCard?.erogato || 0)} subtitle={currentMonthLabel} icon={CalendarDays} className="kpi-card--highlight" />
+              <KPI title="Pratiche" value={num(kpis.pratiche)} subtitle="Totale pratiche" icon={Users} />
+              <KPI title="Ticket medio" value={euro0(kpis.ticketMedio)} subtitle="Importo medio" icon={TrendingUp} />
+              <KPI title="Provvigioni" value={euro0(kpis.provvigioni)} subtitle="Anno selezionato" icon={Wallet} />
+              <KPI title="Forecast anno" value={euro0(forecast.projectedAnnual)} subtitle="Proiezione" icon={Target} />
+              <KPI title="Dealer attivi" value={num(kpis.dealerCount)} subtitle="Nel filtro corrente" icon={Users} />
+            </section>
+            <div className="panel-grid two-one">
+              <div className="panel">
+                <div className="panel-header"><h3>Top 5 dealer</h3><span>Classifica sintetica</span></div>
+                <div className="list-stack">{topFiveDealers.map((d, i) => <div className="list-item" key={`exe-${d.name}`}><div><div className="list-title">#{i + 1} {d.name}</div><div className="list-subtitle">{d.statoDealer} · score {d.score}/100</div></div><div className="list-value">{euro0(d.erogato)}</div></div>)}</div>
+              </div>
+              <div className="panel">
+                <div className="panel-header"><h3>Alert urgenti</h3><span>Priorità alta</span></div>
+                <div className="list-stack">{alertsBySeverity.alta.slice(0, 5).map((a) => <div className="list-item" key={`exe-alert-${a.key}`}><div><div className="list-title">{a.dealer}</div><div className="list-subtitle">{a.tipo} · {a.dato}</div></div><span className="badge">{a.severity}</span></div>)}</div>
+              </div>
+            </div>
             <div className="panel-grid two-one">
               <div className="panel">
                 <div className="panel-header"><h3>{chartTitle}</h3><span>Importo finanziato per data liquidazione</span></div>
@@ -1522,34 +1602,10 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="panel">
-              <div className="panel-header"><h3>Alert Automatici</h3><span>Segnali commerciali auto-calcolati sul filtro corrente</span></div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Dealer</th><th>Tipo alert</th><th>Gravità</th><th>Descrizione</th><th>Dato trigger</th><th>Suggerimento operativo</th></tr></thead>
-                  <tbody>
-                    {dealerAlerts.map((alert) => (
-                      <tr key={alert.key}>
-                        <td>{alert.dealer}</td>
-                        <td>{alert.tipo}</td>
-                        <td><span className="badge">{alert.severity}</span></td>
-                        <td>{alert.descrizione}</td>
-                        <td>{alert.dato}</td>
-                        <td>{alert.suggerimento}</td>
-                      </tr>
-                    ))}
-                    {!dealerAlerts.length && (
-                      <tr><td colSpan={6}>Nessun alert nel mese selezionato dai dati correnti.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
             {comparisonYears.length > 0 && viewGranularity === 'monthly' && (
               <div className="panel">
                 <div className="panel-header"><h3>Confronto anno su anno</h3><span>{currentYear - 1} vs {currentYear}</span></div>
-                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparisonYears}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(currentYear - 1)} strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(currentYear)} strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparisonYears}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(currentYear - 1)} stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(currentYear)} stroke="#0ea5e9" strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
               </div>
             )}
 
@@ -1567,13 +1623,14 @@ useEffect(() => {
                       <YAxis />
                       <Tooltip formatter={(value: number) => euro(value)} />
                       <Legend />
-                      <Line type="monotone" dataKey="corrente" name={`${currentYear}`} strokeWidth={3} dot={false} />
-                      <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="annoScorso" name={`${currentYear - 1}`} strokeWidth={2} dot={false} />
+                      <Line type="monotone" dataKey="corrente" name={`${currentYear}`} stroke="#0ea5e9" strokeWidth={3} dot={false} />
+                      <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                      <Line type="monotone" dataKey="annoScorso" name={`${currentYear - 1}`} stroke="#8b5cf6" strokeWidth={2} dot={false} />
 <Line
   type="monotone"
   dataKey="meseMiglioreYtd"
   name={bestMonthYtd ? `Mese top YTD (${MONTHS_IT[bestMonthYtd - 1]})` : 'Mese top YTD'}
+  stroke="#22c55e"
   strokeWidth={2}
   dot={false}
 />
@@ -1581,6 +1638,7 @@ useEffect(() => {
   type="monotone"
   dataKey="mediaAnnoCorrente"
   name="Media anno corrente"
+  stroke="#ef4444"
   strokeWidth={2}
   dot={false}
 />
@@ -1701,7 +1759,7 @@ useEffect(() => {
           </div>
         )}
 
-        {tab === 'dealers' && (
+        {tab === 'intelligence' && (
           <div className="stack">
             <div className="panel-grid two-one">
               <div className="panel">
@@ -1736,14 +1794,48 @@ useEffect(() => {
               </div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Dealer</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th className="right">AUTO</th><th className="right">POS</th><th className="right">% AUTO/POS</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
+                  <thead><tr><th>Dealer</th><th className="right">Score</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th>Tipo dealer</th><th>Continuità</th><th>Azione consigliata</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
                   <tbody>
                     {smartDealerTable.map((row) => (
-                      <tr key={row.name}><td>{row.name}</td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td className="right">{euro(row.autoAmount)}</td><td className="right">{euro(row.posAmount)}</td><td className="right">{pct(row.autoPct)} / {pct(row.posPct)}</td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
+                      <tr key={row.name}><td>{row.name}</td><td className="right"><span className="badge">{row.score}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td><span className="badge">{row.dealerType}</span></td><td><span className="badge">{row.continuityLabel}</span></td><td><span className="badge">{row.suggestedAction}</span></td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        )}
+        {tab === 'alerts' && (
+          <div className="stack">
+            {(['alta', 'media', 'bassa', 'positiva'] as AlertSeverity[]).map((sev) => (
+              <div className="panel" key={sev}>
+                <div className="panel-header"><h3>Alert {sev}</h3><span>{alertsBySeverity[sev].length} elementi</span></div>
+                <div className="list-stack">
+                  {alertsBySeverity[sev].map((a) => (
+                    <div key={a.key} className="list-item">
+                      <div>
+                        <div className="list-title">{sev === 'alta' ? <ShieldAlert className="inline-icon" /> : sev === 'positiva' ? <CircleCheck className="inline-icon" /> : <TriangleAlert className="inline-icon" />} {a.dealer} · {a.tipo}</div>
+                        <div className="list-subtitle">{a.descrizione} · {a.dato}</div>
+                      </div>
+                      <div className="badge">{a.suggerimento}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {tab === 'focus' && (
+          <div className="stack">
+            <div className="mini-grid four">
+              <div className="mini-card"><div className="mini-label">Focus mese</div><div className="mini-value">{MONTHS_IT[referenceMonth - 1]}</div></div>
+              <div className="mini-card"><div className="mini-label">Erogato mese</div><div className="mini-value">{euro0(currentMonthCard?.erogato || 0)}</div></div>
+              <div className="mini-card"><div className="mini-label">Vs anno precedente</div><div className="mini-value">{pct(monthVsPrevYear)}</div></div>
+              <div className="mini-card"><div className="mini-label">Dealer top 5</div><div className="mini-value">{num(topFiveDealers.length)}</div></div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Top dealer del mese</h3><span>Riepilogo operativo</span></div>
+              <div className="list-stack">{topFiveDealers.map((d, i) => <div className="list-item" key={d.name}><div><div className="list-title">#{i + 1} {d.name}</div><div className="list-subtitle">{d.statoDealer} · {num(d.currentMonthPratiche)} pratiche · score {d.score}/100</div></div><div className="list-value">{euro0(d.currentMonthErogato)}</div></div>)}</div>
             </div>
           </div>
         )}
@@ -1818,6 +1910,12 @@ useEffect(() => {
 
         {tab === 'data' && (
           <div className="stack">
+            <div className="mini-grid four">
+              <div className="mini-card"><div className="mini-label">Dealer N/D</div><div className="mini-value">{num(dataQuality.dealerND)}</div></div>
+              <div className="mini-card"><div className="mini-label">Prodotto mancante</div><div className="mini-value">{num(dataQuality.prodottoMancante)}</div></div>
+              <div className="mini-card"><div className="mini-label">Provvigione zero</div><div className="mini-value">{num(dataQuality.provvigioneZero)}</div></div>
+              <div className="mini-card"><div className="mini-label">Possibili duplicati</div><div className="mini-value">{num(dataQuality.duplicate)}</div></div>
+            </div>
             <div className="panel">
               <div className="panel-header"><h3>Impostazioni forecast</h3><span>Target annuale e stagionalità</span></div>
               <div className="settings-grid">
@@ -1859,8 +1957,20 @@ useEffect(() => {
                 <div>• provvigioni: <strong>PROVV</strong> oppure formula automatica (31 = 0,825%; resto = 0,55%)</div>
               </div>
             </div>
+            <div className="panel">
+              <div className="panel-header"><h3>File importati</h3><span>Storico file caricati nella sessione archivio</span></div>
+              <div className="list-stack">
+                {importedFiles.length ? importedFiles.map((file) => (
+                  <div key={file} className="list-item">
+                    <div className="list-title">{file}</div>
+                  </div>
+                )) : <div className="muted">Nessun file importato.</div>}
+              </div>
+            </div>
           </div>
         )}
+          </div>
+        </div>
       </div>
     </div>
   );

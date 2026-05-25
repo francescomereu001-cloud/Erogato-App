@@ -110,6 +110,7 @@ type WorkbookImport = {
 type ViewGranularity = 'monthly' | 'weekly' | 'daily';
 type DataSourceMode = 'supabase' | 'local' | 'empty';
 type DealerSortKey = 'erogato' | 'crescitaPct' | 'ticketMedio' | 'provvigioni';
+type DealerDetailInsight = { key: string; label: string; positive: boolean };
 
 type SmartDealerRow = {
   name: string;
@@ -183,6 +184,10 @@ function num(n: number, digits = 0) {
 }
 function pct(n: number) {
   return `${num(Number(n || 0) * 100, 1)}%`;
+}
+function diffPct(current: number, previous: number) {
+  if (!Number.isFinite(previous) || previous === 0) return null;
+  return (current - previous) / previous;
 }
 function safeUpper(v: unknown) {
   return String(v ?? '').trim().toUpperCase();
@@ -896,6 +901,7 @@ function App() {
   const [viewGranularity, setViewGranularity] = useState<ViewGranularity>('monthly');
   const [selectedPeriodKey, setSelectedPeriodKey] = useState('');
   const [dealerSortKey, setDealerSortKey] = useState<DealerSortKey>('erogato');
+  const [selectedDealerDetail, setSelectedDealerDetail] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
@@ -1202,6 +1208,61 @@ useEffect(() => {
   }, [filteredRows, currentYear, referenceMonth, dealerSortKey]);
 
   const dealerRanking = useMemo(() => smartDealerTable.slice(0, 12), [smartDealerTable]);
+  const dealerDetail = useMemo(() => {
+    if (!selectedDealerDetail) return null;
+    const dealerRows = filteredRowsAllYears
+      .filter((row) => row.dealer === selectedDealerDetail && row.dateISO)
+      .sort((a, b) => new Date(a.dateISO || 0).getTime() - new Date(b.dateISO || 0).getTime());
+    if (!dealerRows.length) return null;
+    const nowDate = new Date();
+    const latestDate = new Date(dealerRows[dealerRows.length - 1].dateISO!);
+    const analysisDate = currentYear === nowDate.getFullYear() ? nowDate : latestDate;
+    const currentMonth = analysisDate.getMonth() + 1;
+    const prevMonthDate = new Date(analysisDate.getFullYear(), analysisDate.getMonth() - 1, 1);
+    const currentYearValue = analysisDate.getFullYear();
+    const prevYearValue = currentYearValue - 1;
+    const ytdMonthLimit = currentMonth;
+
+    const sum = (list: AppRow[]) => list.reduce((acc, row) => acc + row.importoFinanziato, 0);
+    const count = (list: AppRow[]) => list.length;
+    const ticket = (list: AppRow[]) => list.length ? sum(list) / list.length : 0;
+
+    const last12Start = new Date(currentYearValue, currentMonth - 12, 1);
+    const last12Rows = dealerRows.filter((r) => new Date(r.dateISO!) >= last12Start && new Date(r.dateISO!) <= analysisDate);
+    const currentYearRows = dealerRows.filter((r) => r.year === currentYearValue);
+    const ytdCurrentRows = dealerRows.filter((r) => r.year === currentYearValue && r.month <= ytdMonthLimit);
+    const ytdPrevRows = dealerRows.filter((r) => r.year === prevYearValue && r.month <= ytdMonthLimit);
+    const currentMonthRows = dealerRows.filter((r) => r.year === currentYearValue && r.month === currentMonth);
+    const previousMonthRows = dealerRows.filter((r) => r.year === prevMonthDate.getFullYear() && r.month === (prevMonthDate.getMonth() + 1));
+
+    const monthlyMap = new Map<string, { month: string; erogato: number; pratiche: number; ticketMedio: number; date: Date }>();
+    dealerRows.forEach((r) => {
+      const d = new Date(r.dateISO!);
+      const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+      const prev = monthlyMap.get(key);
+      const erogato = (prev?.erogato || 0) + r.importoFinanziato;
+      const pratiche = (prev?.pratiche || 0) + 1;
+      monthlyMap.set(key, {
+        month: `${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`,
+        erogato,
+        pratiche,
+        ticketMedio: pratiche ? erogato / pratiche : 0,
+        date: new Date(d.getFullYear(), d.getMonth(), 1),
+      });
+    });
+    const last12Monthly = Array.from(monthlyMap.values()).sort((a, b) => a.date.getTime() - b.date.getTime()).slice(-12);
+    const insights: DealerDetailInsight[] = [];
+    const ytdDelta = sum(ytdCurrentRows) - sum(ytdPrevRows);
+    insights.push({ key: 'ytd', label: ytdDelta >= 0 ? 'Dealer in crescita rispetto allo stesso periodo dell’anno precedente' : 'Dealer in calo rispetto allo stesso periodo dell’anno precedente', positive: ytdDelta >= 0 });
+    const monthDelta = sum(currentMonthRows) - sum(previousMonthRows);
+    insights.push({ key: 'month', label: monthDelta >= 0 ? 'Il mese corrente è superiore al mese precedente' : 'Il mese corrente è inferiore al mese precedente', positive: monthDelta >= 0 });
+    const praticheDelta = count(currentMonthRows) - count(previousMonthRows);
+    insights.push({ key: 'pratiche', label: praticheDelta >= 0 ? 'Numero pratiche in aumento' : 'Numero pratiche in diminuzione', positive: praticheDelta >= 0 });
+    const ticketDelta = ticket(currentMonthRows) - ticket(previousMonthRows);
+    insights.push({ key: 'ticket', label: ticketDelta >= 0 ? 'Ticket medio in crescita' : 'Ticket medio in calo', positive: ticketDelta >= 0 });
+
+    return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, last12Rows, sum, count, ticket };
+  }, [selectedDealerDetail, filteredRowsAllYears, currentYear]);
   const dealerAlerts = useMemo(() => buildDealerAlerts(smartDealerTable), [smartDealerTable]);
   const bestMonthYtd = useMemo(
     () => findBestMonthYtd(filteredRowsAllYears, currentYear, referenceMonth),
@@ -1808,7 +1869,7 @@ useEffect(() => {
                 </div>
               </div>
             </div>
-            <div className="panel">
+            {!dealerDetail && <div className="panel">
               <div className="panel-header"><h3>Tabella dealer intelligente</h3><span>Ordinabile per KPI commerciali</span></div>
               <div className="filters-grid">
                 <select className="select" value={dealerSortKey} onChange={(e) => setDealerSortKey(e.target.value as DealerSortKey)}>
@@ -1821,15 +1882,46 @@ useEffect(() => {
               </div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Dealer</th><th className="right">Score</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th>Tipo dealer</th><th>Continuità</th><th>Azione consigliata</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th></tr></thead>
+                  <thead><tr><th>Dealer</th><th className="right">Score</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th>Tipo dealer</th><th>Continuità</th><th>Azione consigliata</th><th className="right">Erogato mese corrente</th><th className="right">Erogato mese prec.</th><th className="right">Var. %</th><th className="right">Pratiche mese corr./prec.</th><th>Stato dealer</th><th>Dettaglio</th></tr></thead>
                   <tbody>
                     {smartDealerTable.map((row) => (
-                      <tr key={row.name}><td>{row.name}</td><td className="right"><span className="badge">{row.score}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td><span className="badge">{row.dealerType}</span></td><td><span className="badge">{row.continuityLabel}</span></td><td><span className="badge">{row.suggestedAction}</span></td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td></tr>
+                      <tr key={row.name} onDoubleClick={() => setSelectedDealerDetail(row.name)} className="dealer-row-clickable"><td>{row.name}</td><td className="right"><span className="badge">{row.score}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{euro(row.ticketMedio)}</td><td className="right">{euro(row.provvigioni)}</td><td><span className="badge">{row.dealerType}</span></td><td><span className="badge">{row.continuityLabel}</span></td><td><span className="badge">{row.suggestedAction}</span></td><td className="right">{euro(row.currentMonthErogato)}</td><td className="right">{euro(row.previousMonthErogato)}</td><td className="right">{pct(row.growthErogatoPct)}</td><td className="right">{num(row.currentMonthPratiche)} / {num(row.previousMonthPratiche)}</td><td><span className="badge">{row.statoDealer}</span></td><td><button className="action-button ghost" onClick={() => setSelectedDealerDetail(row.name)}>Apri scheda</button></td></tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            </div>
+            </div>}
+            {dealerDetail && (
+              <div className="panel">
+                <div className="panel-header"><h3>Scheda dealer: {selectedDealerDetail}</h3><button className="action-button" onClick={() => setSelectedDealerDetail(null)}><Home className="icon" />Torna alla lista dealer</button></div>
+                <section className="kpi-grid">
+                  <KPI title="Erogato totale storico" value={euro0(dealerDetail.sum(dealerDetail.dealerRows))} icon={Euro} />
+                  <KPI title="Erogato ultimi 12 mesi" value={euro0(dealerDetail.sum(dealerDetail.last12Rows))} icon={CalendarDays} />
+                  <KPI title="Erogato anno corrente" value={euro0(dealerDetail.sum(dealerDetail.currentYearRows))} icon={TrendingUp} />
+                  <KPI title="Pratiche totali" value={num(dealerDetail.count(dealerDetail.dealerRows))} icon={Users} />
+                  <KPI title="Pratiche anno corrente" value={num(dealerDetail.count(dealerDetail.currentYearRows))} icon={Users} />
+                  <KPI title="Ticket medio anno corrente" value={euro0(dealerDetail.ticket(dealerDetail.currentYearRows))} icon={Target} />
+                  <KPI title="Ticket medio ultimi 12 mesi" value={euro0(dealerDetail.ticket(dealerDetail.last12Rows))} icon={Target} />
+                </section>
+                <div className="mini-grid three">
+                  <div className="mini-card"><div className="mini-label">Crescita YTD erogato</div><div className="mini-value">{euro0(dealerDetail.sum(dealerDetail.ytdCurrentRows) - dealerDetail.sum(dealerDetail.ytdPrevRows))} {diffPct(dealerDetail.sum(dealerDetail.ytdCurrentRows), dealerDetail.sum(dealerDetail.ytdPrevRows)) === null ? '(n/d)' : pct(diffPct(dealerDetail.sum(dealerDetail.ytdCurrentRows), dealerDetail.sum(dealerDetail.ytdPrevRows)) || 0)}</div></div>
+                  <div className="mini-card"><div className="mini-label">Crescita YTD pratiche</div><div className="mini-value">{num(dealerDetail.count(dealerDetail.ytdCurrentRows) - dealerDetail.count(dealerDetail.ytdPrevRows))} {diffPct(dealerDetail.count(dealerDetail.ytdCurrentRows), dealerDetail.count(dealerDetail.ytdPrevRows)) === null ? '(n/d)' : pct(diffPct(dealerDetail.count(dealerDetail.ytdCurrentRows), dealerDetail.count(dealerDetail.ytdPrevRows)) || 0)}</div></div>
+                  <div className="mini-card"><div className="mini-label">Crescita YTD ticket medio</div><div className="mini-value">{euro0(dealerDetail.ticket(dealerDetail.ytdCurrentRows) - dealerDetail.ticket(dealerDetail.ytdPrevRows))}</div></div>
+                </div>
+                <div className="mini-grid three">
+                  <div className="mini-card"><div className="mini-label">Erogato mese corr./prec.</div><div className="mini-value">{euro0(dealerDetail.sum(dealerDetail.currentMonthRows))} / {euro0(dealerDetail.sum(dealerDetail.previousMonthRows))}</div></div>
+                  <div className="mini-card"><div className="mini-label">Pratiche mese corr./prec.</div><div className="mini-value">{num(dealerDetail.count(dealerDetail.currentMonthRows))} / {num(dealerDetail.count(dealerDetail.previousMonthRows))}</div></div>
+                  <div className="mini-card"><div className="mini-label">Ticket mese corr./prec.</div><div className="mini-value">{euro0(dealerDetail.ticket(dealerDetail.currentMonthRows))} / {euro0(dealerDetail.ticket(dealerDetail.previousMonthRows))}</div></div>
+                </div>
+                <div className="panel-header"><h3>Andamento ultimi 12 mesi</h3></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={dealerDetail.last12Monthly}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey="erogato" stroke="#0ea5e9" strokeWidth={3} /><Line type="monotone" dataKey="pratiche" stroke="#22c55e" strokeWidth={2} /></LineChart></ResponsiveContainer></div>
+                <div className="table-wrap"><table><thead><tr><th>Mese</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th></tr></thead><tbody>{dealerDetail.last12Monthly.map((m) => <tr key={m.month}><td>{m.month}</td><td className="right">{euro(m.erogato)}</td><td className="right">{num(m.pratiche)}</td><td className="right">{euro(m.ticketMedio)}</td></tr>)}</tbody></table></div>
+                <div className="panel-header"><h3>Insight commerciali automatici</h3></div>
+                <div className="quick-pills">{dealerDetail.insights.map((i) => <span key={i.key} className={`pill ${i.positive ? 'active' : ''}`}>{i.label}</span>)}</div>
+                <div className="panel-header"><h3>Pratiche dealer</h3><span>Ordinate dalla più recente</span></div>
+                <div className="table-wrap"><table><thead><tr><th>Data liquidazione</th><th className="right">Importo</th><th>Prodotto</th><th className="right">Numero rate</th><th className="right">Provvigione</th><th>Situazione</th></tr></thead><tbody>{[...dealerDetail.dealerRows].sort((a, b) => new Date(b.dateISO || 0).getTime() - new Date(a.dateISO || 0).getTime()).slice(0, 500).map((row) => <tr key={`dealer-${row.rowId}`}><td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td><td className="right">{euro(row.importoFinanziato || row.importoNettoErogato)}</td><td>{row.prodottoLabel || row.prodottoCode || '-'}</td><td className="right">{num(row.numeroRate)}</td><td className="right">{euro(row.provvigione)}</td><td>{row.situazione || '-'}</td></tr>)}</tbody></table></div>
+              </div>
+            )}
           </div>
         )}
         {tab === 'alerts' && (

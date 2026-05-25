@@ -1557,30 +1557,6 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="panel">
-              <div className="panel-header"><h3>Alert Automatici</h3><span>Segnali commerciali auto-calcolati sul filtro corrente</span></div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Dealer</th><th>Tipo alert</th><th>Gravità</th><th>Descrizione</th><th>Dato trigger</th><th>Suggerimento operativo</th></tr></thead>
-                  <tbody>
-                    {dealerAlerts.map((alert) => (
-                      <tr key={alert.key}>
-                        <td>{alert.dealer}</td>
-                        <td>{alert.tipo}</td>
-                        <td><span className="badge">{alert.severity}</span></td>
-                        <td>{alert.descrizione}</td>
-                        <td>{alert.dato}</td>
-                        <td>{alert.suggerimento}</td>
-                      </tr>
-                    ))}
-                    {!dealerAlerts.length && (
-                      <tr><td colSpan={6}>Nessun alert nel mese selezionato dai dati correnti.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
             {comparisonYears.length > 0 && viewGranularity === 'monthly' && (
               <div className="panel">
                 <div className="panel-header"><h3>Confronto anno su anno</h3><span>{currentYear - 1} vs {currentYear}</span></div>

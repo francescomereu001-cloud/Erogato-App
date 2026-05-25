@@ -40,6 +40,8 @@ import {
   BriefcaseBusiness,
   Settings,
   Menu,
+  ChevronLeft,
+  ChevronRight,
   MoreHorizontal,
   X,
 } from 'lucide-react';
@@ -1143,6 +1145,44 @@ useEffect(() => {
   const selectedPeriodMeta = useMemo(() => {
     return periodOptions.find((row) => (viewGranularity === 'monthly' ? String(row.monthIndex) : row.key) === selectedPeriodKey) || null;
   }, [periodOptions, selectedPeriodKey, viewGranularity]);
+  const dailyExecutiveData = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; fullLabel: string; erogato: number; pratiche: number }>();
+    filteredRows.forEach((row) => {
+      if (!row.dateISO) return;
+      if (!map.has(row.dateISO)) {
+        const date = new Date(row.dateISO);
+        map.set(row.dateISO, {
+          key: row.dateISO,
+          label: date.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' }),
+          fullLabel: date.toLocaleDateString('it-IT', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }),
+          erogato: 0,
+          pratiche: 0,
+        });
+      }
+      const bucket = map.get(row.dateISO)!;
+      bucket.erogato += row.importoFinanziato;
+      bucket.pratiche += 1;
+    });
+    return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [filteredRows]);
+  const [selectedExecutiveDayKey, setSelectedExecutiveDayKey] = useState('');
+  useEffect(() => {
+    if (!dailyExecutiveData.length) {
+      if (selectedExecutiveDayKey) setSelectedExecutiveDayKey('');
+      return;
+    }
+    if (!dailyExecutiveData.some((item) => item.key === selectedExecutiveDayKey)) {
+      setSelectedExecutiveDayKey(dailyExecutiveData[dailyExecutiveData.length - 1].key);
+    }
+  }, [dailyExecutiveData, selectedExecutiveDayKey]);
+  const selectedExecutiveDayIndex = dailyExecutiveData.findIndex((item) => item.key === selectedExecutiveDayKey);
+  const selectedExecutiveDay = selectedExecutiveDayIndex >= 0 ? dailyExecutiveData[selectedExecutiveDayIndex] : null;
+  const goExecutiveDay = (direction: -1 | 1) => {
+    if (!dailyExecutiveData.length || selectedExecutiveDayIndex < 0) return;
+    const nextIndex = selectedExecutiveDayIndex + direction;
+    if (nextIndex < 0 || nextIndex >= dailyExecutiveData.length) return;
+    setSelectedExecutiveDayKey(dailyExecutiveData[nextIndex].key);
+  };
 
   const periodLabel = viewGranularity === 'monthly' ? 'mese' : viewGranularity === 'weekly' ? 'settimana' : 'giorno';
   const chartTitle = viewGranularity === 'monthly' ? 'Erogato mese per mese' : viewGranularity === 'weekly' ? 'Erogato settimana per settimana' : 'Erogato giorno per giorno';
@@ -1616,6 +1656,29 @@ useEffect(() => {
 
         {tab === 'executive' && (
           <div className="stack">
+            <section className="panel executive-daily-banner">
+              <div className="panel-header">
+                <h3>Riepilogo giornaliero erogato</h3>
+                <span>Consulta giorno per giorno erogato e pratiche</span>
+              </div>
+              {selectedExecutiveDay ? (
+                <div className="executive-daily-controls">
+                  <button className="action-button ghost" onClick={() => goExecutiveDay(-1)} disabled={selectedExecutiveDayIndex <= 0}>
+                    <ChevronLeft className="icon" /> Giorno precedente
+                  </button>
+                  <select className="select executive-daily-select" value={selectedExecutiveDay.key} onChange={(e) => setSelectedExecutiveDayKey(e.target.value)}>
+                    {dailyExecutiveData.map((day) => <option key={day.key} value={day.key}>{day.fullLabel}</option>)}
+                  </select>
+                  <button className="action-button ghost" onClick={() => goExecutiveDay(1)} disabled={selectedExecutiveDayIndex >= dailyExecutiveData.length - 1}>
+                    Giorno successivo <ChevronRight className="icon" />
+                  </button>
+                  <div className="readonly"><strong>Erogato:</strong> {euro(selectedExecutiveDay.erogato)}</div>
+                  <div className="readonly"><strong>Pratiche erogate:</strong> {num(selectedExecutiveDay.pratiche)}</div>
+                </div>
+              ) : (
+                <div className="muted">Nessuna pratica giornaliera disponibile nei filtri correnti.</div>
+              )}
+            </section>
             <section className="dashboard-grid">
               <KPI title="Erogato mese corrente" value={euro0(currentMonthCard?.erogato || 0)} subtitle={currentMonthLabel} icon={CalendarDays} className="kpi-card--highlight" />
               <KPI title="Pratiche" value={num(kpis.pratiche)} subtitle="Totale pratiche" icon={Users} />

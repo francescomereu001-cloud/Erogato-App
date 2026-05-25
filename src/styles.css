@@ -195,6 +195,10 @@ button, input, select { font: inherit; }
 
 .panel-grid.two-one { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 18px; }
 .panel { padding: 18px; }
+.executive-daily-banner { background: linear-gradient(135deg, #f3f8ff 0%, #eaf2ff 100%); border-color: #cdddfa; }
+.executive-daily-controls { display: grid; grid-template-columns: auto minmax(240px, 1fr) auto 1fr 1fr; gap: 10px; align-items: center; }
+.executive-daily-select { min-width: 240px; }
+.executive-daily-controls .action-button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
 .panel-header { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin-bottom: 14px; }
 .panel-header h3 { margin: 0; font-size: 20px; }
 .panel-header span { color: var(--muted); font-size: 13px; }
@@ -318,6 +322,8 @@ tr:last-child td { border-bottom: none; }
   .filters-content { display: none; }
   .filters-content.open { display: block; }
   .filters-top, .filters-grid, .settings-grid, .months-grid { grid-template-columns: 1fr; }
+  .executive-daily-controls { grid-template-columns: 1fr; }
+  .executive-daily-select { min-width: 0; }
   .input, .select { width: 100%; }
   .kpi-grid, .dashboard-grid, .mini-grid.four, .mode-cards { grid-template-columns: 1fr; gap: 10px; }
   .kpi-card { padding: 12px; }

@@ -40,6 +40,8 @@ import {
   BriefcaseBusiness,
   Settings,
   Menu,
+  MoreHorizontal,
+  X,
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from "./supabase";
@@ -823,6 +825,21 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
 }
 
 function KPI({ title, value, subtitle, icon: Icon, className = '' }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }>; className?: string }) {
+
+  const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
+    ['executive', 'Executive', Home],
+    ['focus', 'Focus', CalendarDays],
+    ['intelligence', 'Dealer', BriefcaseBusiness],
+    ['alerts', 'Alert', Siren],
+  ];
+  const secondaryTabs: Array<[typeof tab, string, typeof Home]> = [
+    ['products', 'Prodotti', Package],
+    ['forecast', 'Forecast & Target', Target],
+    ['subagenti', 'Filiali', Building2],
+    ['portfolio', 'Portafoglio', Boxes],
+    ['data', 'Dati / Impostazioni', Settings],
+  ];
+
   return (
     <div className={`kpi-card ${className}`.trim()}>
       <div>
@@ -892,6 +909,9 @@ function App() {
   const [viewGranularity, setViewGranularity] = useState<ViewGranularity>('monthly');
   const [selectedPeriodKey, setSelectedPeriodKey] = useState('');
   const [dealerSortKey, setDealerSortKey] = useState<DealerSortKey>('erogato');
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
   const resetFilters = () => {
     setSearch('');
@@ -1448,17 +1468,7 @@ useEffect(() => {
         <aside className="sidebar">
           <div className="sidebar-brand">Dealer Erogato App</div>
           <div className="mobile-nav"><Menu className="icon" /> Navigazione</div>
-          {[
-            ['executive', 'Executive', Home],
-            ['focus', 'Focus Mese', CalendarDays],
-            ['intelligence', 'Dealer Intelligence', BriefcaseBusiness],
-            ['alerts', 'Alert Center', Siren],
-            ['products', 'Prodotti', Package],
-            ['forecast', 'Forecast & Target', Target],
-            ['subagenti', 'Filiali', Building2],
-            ['portfolio', 'Portafoglio', Boxes],
-            ['data', 'Dati / Impostazioni', Settings],
-          ].map(([key, label, Icon]) => (
+          {[...primaryMobileTabs, ...secondaryTabs].map(([key, label, Icon]) => (
             <button key={key} className={`sidebar-item ${tab === key ? 'active' : ''}`} onClick={() => setTab(key as typeof tab)}>
               <Icon className="icon" /> <span>{label}</span>
             </button>
@@ -1475,15 +1485,30 @@ useEffect(() => {
               </div>
             </div>
             <div className="hero-actions">
-              <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Carica Excel'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
-              <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
-              <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} /></label>
-              <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
+              <div className="desktop-actions">
+                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Carica Excel'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
+                <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
+                <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} /></label>
+                <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
+              </div>
+              <div className="mobile-actions-menu">
+                <button className="action-button primary" onClick={() => setActionsOpen((v) => !v)}><Menu className="icon" />Azioni</button>
+                {actionsOpen && (
+                  <div className="actions-popover">
+                    <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Carica Excel'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => {handleFiles(e.target.files); setActionsOpen(false);}} /></label>
+                    <button className="action-button" onClick={() => { exportBackup(); setActionsOpen(false); }}><Download className="icon" />Backup</button>
+                    <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) { importBackup(file); setActionsOpen(false);} }} /></label>
+                    <button className="action-button danger" onClick={() => { clearArchive(); setActionsOpen(false); }}><Trash2 className="icon" />Azzera archivio</button>
+                  </div>
+                )}
+              </div>
             </div>
           </header>
           <div className="content-area">
 
         <section className="filters-card">
+          <button className="mobile-filter-toggle action-button ghost" onClick={() => setMobileFiltersOpen((v) => !v)}><Search className="icon" />Filtri {mobileFiltersOpen ? <X className="icon" /> : null}</button>
+          <div className={`filters-content ${mobileFiltersOpen ? "open" : ""}`}>
           <div className="filters-headline">
             <div>
               <strong>Filtri rapidi</strong>
@@ -1515,6 +1540,7 @@ useEffect(() => {
             <button className={`pill ${viewGranularity === 'weekly' ? 'active' : ''}`} onClick={() => setViewGranularity('weekly')}>Vista Settimanale</button>
             <button className={`pill ${viewGranularity === 'monthly' ? 'active' : ''}`} onClick={() => setViewGranularity('monthly')}>Vista Mensile</button>
             <button className={`pill ${yearFilter === String(currentYear) ? 'active' : ''}`} onClick={() => setYearFilter(String(currentYear))}>Anno corrente</button>
+          </div>
           </div>
         </section>
 
@@ -1970,6 +1996,21 @@ useEffect(() => {
           </div>
         )}
           </div>
+          <nav className="bottom-nav">
+            {primaryMobileTabs.map(([key, label, Icon]) => (
+              <button key={key} className={`bottom-nav-item ${tab === key ? 'active' : ''}`} onClick={() => setTab(key)}><Icon className="icon" /><span>{label}</span></button>
+            ))}
+            <div className="bottom-nav-more">
+              <button className={`bottom-nav-item ${secondaryTabs.some(([key]) => key === tab) ? 'active' : ''}`} onClick={() => setMoreOpen((v) => !v)}><MoreHorizontal className="icon" /><span>Altro</span></button>
+              {moreOpen && (
+                <div className="more-popover">
+                  {secondaryTabs.map(([key, label, Icon]) => (
+                    <button key={key} className={`sidebar-item ${tab === key ? 'active' : ''}`} onClick={() => { setTab(key); setMoreOpen(false); }}><Icon className="icon" /><span>{label}</span></button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </nav>
         </div>
       </div>
     </div>

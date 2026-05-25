@@ -283,3 +283,51 @@ tr:last-child td { border-bottom: none; }
 
 .period-grid { margin-bottom: 12px; }
 .period-summary { margin-bottom: 14px; }
+
+.desktop-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+.mobile-actions-menu { display: none; position: relative; }
+.actions-popover { position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 10px; display: grid; gap: 8px; min-width: 240px; box-shadow: var(--shadow); }
+.actions-popover .action-button { width: 100%; justify-content: flex-start; box-shadow: none; }
+.mobile-filter-toggle { display: none; margin-bottom: 10px; }
+.bottom-nav { display: none; }
+.more-popover { position: absolute; bottom: 58px; right: 0; left: auto; background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 8px; display: grid; gap: 6px; min-width: 220px; box-shadow: var(--shadow); }
+.bottom-nav-more { position: relative; }
+
+@media (max-width: 1024px) {
+  .main-layout { grid-template-columns: 1fr; padding: 12px; }
+  .sidebar { display: none; }
+  .content-area { padding-bottom: 86px; }
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .panel-grid.two-one { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 768px) {
+  html, body { overflow-x: hidden; }
+  .topbar { align-items: stretch; }
+  .desktop-actions { display: none; }
+  .mobile-actions-menu { display: block; }
+  .mobile-filter-toggle { display: inline-flex; width: 100%; justify-content: center; }
+  .filters-content { display: none; }
+  .filters-content.open { display: block; }
+  .filters-top, .filters-grid, .settings-grid, .months-grid { grid-template-columns: 1fr; }
+  .input, .select { width: 100%; }
+  .kpi-grid, .dashboard-grid, .mini-grid.four, .mode-cards { grid-template-columns: 1fr; gap: 10px; }
+  .kpi-card { padding: 12px; }
+  .kpi-value { font-size: 1.1rem; margin-top: 4px; }
+  .kpi-icon { width: 34px; height: 34px; }
+  .chart { height: 240px; }
+  .chart.tall { height: 260px; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .table-wrap::after { content: '⇆ scorri'; display: block; text-align: right; font-size: 11px; color: var(--muted); padding: 4px 10px 8px; }
+  .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 8px; background: rgba(255,255,255,.95); border-top: 1px solid var(--line); backdrop-filter: blur(8px); }
+  .bottom-nav-item { border: 1px solid var(--line); background: #fff; border-radius: 12px; padding: 6px 2px; font-size: 11px; color: var(--muted); display: grid; gap: 2px; justify-items: center; }
+  .bottom-nav-item.active { color: #fff; background: var(--primary); border-color: var(--primary); }
+}
+
+@media (max-width: 480px) {
+  .main-layout { padding: 8px; gap: 10px; }
+  .topbar, .panel, .filters-card, .kpi-card, .mini-card { border-radius: 14px; padding: 12px; }
+  .panel-header h3 { font-size: 17px; }
+  .chart { height: 210px; }
+}

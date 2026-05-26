@@ -1723,6 +1723,27 @@ useEffect(() => {
     return { totalErogato, top10, chartData, topDealer, top5Peso, familyLeader, autoTop10, posTop10, autoTotal, posTotal };
   }, [filteredRows]);
 
+
+  const dealerWeightViewData = useMemo(() => {
+    const baseRows = dealerWeightView === 'totale'
+      ? dealerWeightAnalytics.top10
+      : dealerWeightView === 'auto'
+        ? dealerWeightAnalytics.autoTop10
+        : dealerWeightAnalytics.posTop10;
+    const tableRows = baseRows;
+    const chartRows = baseRows.map((row) => ({
+      dealer: row.dealer,
+      AUTO: dealerWeightView === 'pos' ? 0 : row.auto,
+      POS: dealerWeightView === 'auto' ? 0 : row.pos,
+    }));
+    const subtitle = dealerWeightView === 'totale'
+      ? 'Incidenza dei principali dealer sull’erogato filtrato'
+      : dealerWeightView === 'auto'
+        ? 'Incidenza dei dealer AUTO sul totale dealer AUTO'
+        : 'Incidenza dei dealer POS sul totale dealer POS';
+    return { tableRows, chartRows, subtitle };
+  }, [dealerWeightView, dealerWeightAnalytics]);
+
   const portfolioMonthOptions = useMemo(() => {
     const months = new Map<string, { key: string; year: number; month: number; label: string }>();
     filteredRows.forEach((row) => {
@@ -2266,7 +2287,7 @@ useEffect(() => {
         {tab === 'portfolio' && (
           <div className="stack">
             <div className="panel">
-              <div className="panel-header"><h3>Peso dealer su erogato</h3><span>Incidenza dei principali dealer sull’erogato filtrato</span></div>
+              <div className="panel-header"><h3>Peso dealer su erogato</h3><span>{dealerWeightViewData.subtitle}</span></div>
               <div className="mini-grid three">
                 <div className="mini-card"><div className="mini-label">Dealer più pesante</div><div className="mini-value">{dealerWeightAnalytics.topDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topDealer ? `${euro0(dealerWeightAnalytics.topDealer.totale)} · ${pct(dealerWeightAnalytics.topDealer.pesoPct / 100)}` : 'Nessun dato'}</div></div>
                 <div className="mini-card"><div className="mini-label">Peso Top 5 dealer</div><div className="mini-value">{pct(dealerWeightAnalytics.top5Peso / 100)}</div><div className="mini-note">Incidenza cumulata</div></div>
@@ -2277,13 +2298,13 @@ useEffect(() => {
                 <button className={`pill ${dealerWeightView === 'auto' ? 'active' : ''}`} onClick={() => setDealerWeightView('auto')}>Dealer AUTO</button>
                 <button className={`pill ${dealerWeightView === 'pos' ? 'active' : ''}`} onClick={() => setDealerWeightView('pos')}>Dealer POS</button>
               </div>
-              <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerWeightAnalytics.chartData} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="dealer" width={190} /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" stackId="a" fill="#2563eb" /><Bar dataKey="POS" stackId="a" fill="#22c55e" /></BarChart></ResponsiveContainer></div>
+              <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerWeightView === 'totale' ? dealerWeightAnalytics.chartData : dealerWeightViewData.chartRows} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="dealer" width={190} /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" stackId="a" fill="#2563eb" /><Bar dataKey="POS" stackId="a" fill="#22c55e" /></BarChart></ResponsiveContainer></div>
               <div className="table-wrap">
                 <table>
                   <thead><tr><th>Dealer</th><th className="right">Erogato totale</th><th className="right">Pratiche</th><th className="right">Peso %</th><th className="right">AUTO</th><th className="right">POS</th><th>Mix prevalente</th></tr></thead>
                   <tbody>
-                    {(dealerWeightView === 'totale' ? dealerWeightAnalytics.top10 : dealerWeightView === 'auto' ? dealerWeightAnalytics.autoTop10 : dealerWeightAnalytics.posTop10).map((row) => <tr key={`dw-${dealerWeightView}-${row.dealer}`}><td>{row.dealer}</td><td className="right">{euro(row.totale)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct((dealerWeightView === 'totale' ? row.pesoPct : row.pesoFamilyPct) / 100)}</td><td className="right">{euro(row.auto)}</td><td className="right">{euro(row.pos)}</td><td><span className="badge">{row.mixPrevalente}</span></td></tr>)}
-                    {!(dealerWeightView === 'totale' ? dealerWeightAnalytics.top10 : dealerWeightView === 'auto' ? dealerWeightAnalytics.autoTop10 : dealerWeightAnalytics.posTop10).length && <tr><td colSpan={7}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
+                    {dealerWeightViewData.tableRows.map((row) => <tr key={`dw-${dealerWeightView}-${row.dealer}`}><td>{row.dealer}</td><td className="right">{euro(row.totale)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct((dealerWeightView === 'totale' ? row.pesoPct : row.pesoFamilyPct) / 100)}</td><td className="right">{euro(row.auto)}</td><td className="right">{euro(row.pos)}</td><td><span className="badge">{row.mixPrevalente}</span></td></tr>)}
+                    {!dealerWeightViewData.tableRows.length && <tr><td colSpan={7}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
                   </tbody>
                 </table>
               </div>

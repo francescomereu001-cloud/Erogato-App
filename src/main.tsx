@@ -926,6 +926,7 @@ function App() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [portfolioMonthFilter, setPortfolioMonthFilter] = useState('');
+  const [dealerWeightView, setDealerWeightView] = useState<'totale' | 'auto' | 'pos'>('totale');
 
   const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
     ['executive', 'Executive', Home],
@@ -1697,11 +1698,19 @@ useEffect(() => {
       autoPct: row.totale > 0 ? (row.auto / row.totale) * 100 : 0,
       posPct: row.totale > 0 ? (row.pos / row.totale) * 100 : 0,
       mixPrevalente: row.auto >= row.pos ? 'AUTO' : 'POS',
+      familyType: row.auto >= row.pos ? 'AUTO' : 'POS',
     });
     const top10 = top10Raw.map(toRow);
     const chartData = altri.totale > 0 ? [...top10.map((r) => ({ dealer: r.dealer, AUTO: r.auto, POS: r.pos, Totale: r.totale })), { dealer: altri.dealer, AUTO: altri.auto, POS: altri.pos, Totale: altri.totale }] : top10.map((r) => ({ dealer: r.dealer, AUTO: r.auto, POS: r.pos, Totale: r.totale }));
 
     const topDealer = top10[0] || null;
+
+    const autoDealers = sorted.map(toRow).filter((r) => r.familyType === 'AUTO');
+    const posDealers = sorted.map(toRow).filter((r) => r.familyType === 'POS');
+    const autoTotal = autoDealers.reduce((sum, r) => sum + r.totale, 0);
+    const posTotal = posDealers.reduce((sum, r) => sum + r.totale, 0);
+    const autoTop10 = autoDealers.slice(0, 10).map((r) => ({ ...r, pesoFamilyPct: autoTotal > 0 ? (r.totale / autoTotal) * 100 : 0 }));
+    const posTop10 = posDealers.slice(0, 10).map((r) => ({ ...r, pesoFamilyPct: posTotal > 0 ? (r.totale / posTotal) * 100 : 0 }));
     const top5Peso = top10.slice(0, 5).reduce((sum, row) => sum + row.pesoPct, 0);
     const topAuto = top10.filter((r) => r.auto > 0).sort((a, b) => b.auto - a.auto)[0];
     const topPos = top10.filter((r) => r.pos > 0).sort((a, b) => b.pos - a.pos)[0];
@@ -1711,7 +1720,7 @@ useEffect(() => {
         ? { label: 'Dealer POS più rilevante', dealer: topPos.dealer, importo: topPos.pos }
         : null;
 
-    return { totalErogato, top10, chartData, topDealer, top5Peso, familyLeader };
+    return { totalErogato, top10, chartData, topDealer, top5Peso, familyLeader, autoTop10, posTop10, autoTotal, posTotal };
   }, [filteredRows]);
 
   const portfolioMonthOptions = useMemo(() => {
@@ -2263,13 +2272,18 @@ useEffect(() => {
                 <div className="mini-card"><div className="mini-label">Peso Top 5 dealer</div><div className="mini-value">{pct(dealerWeightAnalytics.top5Peso / 100)}</div><div className="mini-note">Incidenza cumulata</div></div>
                 <div className="mini-card"><div className="mini-label">{dealerWeightAnalytics.familyLeader?.label || 'Dealer famiglia rilevante'}</div><div className="mini-value">{dealerWeightAnalytics.familyLeader?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.familyLeader ? euro0(dealerWeightAnalytics.familyLeader.importo) : 'Nessun dato'}</div></div>
               </div>
+              <div className="quick-pills">
+                <button className={`pill ${dealerWeightView === 'totale' ? 'active' : ''}`} onClick={() => setDealerWeightView('totale')}>Totale</button>
+                <button className={`pill ${dealerWeightView === 'auto' ? 'active' : ''}`} onClick={() => setDealerWeightView('auto')}>Dealer AUTO</button>
+                <button className={`pill ${dealerWeightView === 'pos' ? 'active' : ''}`} onClick={() => setDealerWeightView('pos')}>Dealer POS</button>
+              </div>
               <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerWeightAnalytics.chartData} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="dealer" width={190} /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" stackId="a" fill="#2563eb" /><Bar dataKey="POS" stackId="a" fill="#22c55e" /></BarChart></ResponsiveContainer></div>
               <div className="table-wrap">
                 <table>
                   <thead><tr><th>Dealer</th><th className="right">Erogato totale</th><th className="right">Pratiche</th><th className="right">Peso %</th><th className="right">AUTO</th><th className="right">POS</th><th>Mix prevalente</th></tr></thead>
                   <tbody>
-                    {dealerWeightAnalytics.top10.map((row) => <tr key={`dw-${row.dealer}`}><td>{row.dealer}</td><td className="right">{euro(row.totale)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct(row.pesoPct / 100)}</td><td className="right">{euro(row.auto)}</td><td className="right">{euro(row.pos)}</td><td><span className="badge">{row.mixPrevalente}</span></td></tr>)}
-                    {!dealerWeightAnalytics.top10.length && <tr><td colSpan={7}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
+                    {(dealerWeightView === 'totale' ? dealerWeightAnalytics.top10 : dealerWeightView === 'auto' ? dealerWeightAnalytics.autoTop10 : dealerWeightAnalytics.posTop10).map((row) => <tr key={`dw-${dealerWeightView}-${row.dealer}`}><td>{row.dealer}</td><td className="right">{euro(row.totale)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct((dealerWeightView === 'totale' ? row.pesoPct : row.pesoFamilyPct) / 100)}</td><td className="right">{euro(row.auto)}</td><td className="right">{euro(row.pos)}</td><td><span className="badge">{row.mixPrevalente}</span></td></tr>)}
+                    {!(dealerWeightView === 'totale' ? dealerWeightAnalytics.top10 : dealerWeightView === 'auto' ? dealerWeightAnalytics.autoTop10 : dealerWeightAnalytics.posTop10).length && <tr><td colSpan={7}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
                   </tbody>
                 </table>
               </div>

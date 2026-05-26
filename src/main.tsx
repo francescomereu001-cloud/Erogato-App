@@ -179,13 +179,13 @@ const AUTH_USERNAME = import.meta.env.VITE_APP_USERNAME;
 const AUTH_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
 
 function euro(n: number) {
-  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(Number(n || 0));
+  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2, useGrouping: 'always' }).format(Number(n || 0));
 }
 function euro0(n: number) {
-  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(n || 0));
+  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0, useGrouping: 'always' }).format(Number(n || 0));
 }
 function num(n: number, digits = 0) {
-  return new Intl.NumberFormat('it-IT', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(Number(n || 0));
+  return new Intl.NumberFormat('it-IT', { maximumFractionDigits: digits, minimumFractionDigits: digits, useGrouping: 'always' }).format(Number(n || 0));
 }
 function pct(n: number) {
   return `${num(Number(n || 0) * 100, 1)}%`;
@@ -1954,7 +1954,7 @@ useEffect(() => {
             <div className="panel">
               <div className="panel-header">
                 <h3>Dettaglio pratiche per {periodLabel}</h3>
-                <span>Seleziona il {periodLabel} da analizzare e vedi le pratiche erogate</span>
+                <span>Seleziona il {periodLabel} da analizzare e consulta i KPI sintetici</span>
               </div>
               <div className="filters-grid period-grid">
                 <select className="select" value={selectedPeriodKey} onChange={(e) => setSelectedPeriodKey(e.target.value)}>
@@ -1967,33 +1967,6 @@ useEffect(() => {
                 <div className="readonly">{selectedPeriodSummary ? euro(selectedPeriodSummary.provvigioni) : '-'}</div>
               </div>
               <div className="period-summary muted">{selectedPeriodMeta ? `Periodo selezionato: ${selectedPeriodMeta.fullLabel}` : `Nessun ${periodLabel} disponibile nel filtro corrente.`}</div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th>Tabella</th><th className="right">Importo</th><th className="right">Provv.</th><th className="right">Polizza</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedPeriodRows.map((row) => (
-                      <tr key={row.rowId}>
-                        <td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td>
-                        <td>{row.dealer}</td>
-                        <td>{row.subagente}</td>
-                        <td>{row.cliente}</td>
-                        <td>{row.prodottoCode}</td>
-                        <td>{row.tabella || '-'}</td>
-                        <td className="right">{euro(row.importoFinanziato)}</td>
-                        <td className="right">{euro(row.provvigione)}</td>
-                        <td className="right">{euro(row.polizza)}</td>
-                      </tr>
-                    ))}
-                    {!selectedPeriodRows.length && (
-                      <tr><td colSpan={9}>Nessuna pratica per il {periodLabel} selezionato.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
             </div>
 
             {comparisonYears.length > 0 && viewGranularity === 'monthly' && (

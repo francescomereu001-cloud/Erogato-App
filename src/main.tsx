@@ -1485,6 +1485,41 @@ useEffect(() => {
     URL.revokeObjectURL(url);
   }
 
+
+
+  function exportDealerGrowthReport() {
+    if (!dealerDetail || !selectedDealerDetail) return;
+
+    const formatPct = (value: number | null) => value === null ? 'n/d' : `${num(value * 100, 1)}%`;
+    const ytdErogatoCurrent = dealerDetail.sum(dealerDetail.ytdCurrentRows);
+    const ytdErogatoPrev = dealerDetail.sum(dealerDetail.ytdPrevRows);
+    const ytdPraticheCurrent = dealerDetail.count(dealerDetail.ytdCurrentRows);
+    const ytdPratichePrev = dealerDetail.count(dealerDetail.ytdPrevRows);
+    const rowsForExport = dealerDetail.last12Monthly.map((row) => ({
+      Mese: row.month,
+      Erogato: row.erogato,
+      Pratiche: row.pratiche,
+      TicketMedio: row.ticketMedio,
+    }));
+
+    rowsForExport.push(
+      { Mese: 'TOTALE_ULTIMI_12_MESI', Erogato: dealerDetail.sum(dealerDetail.last12Rows), Pratiche: dealerDetail.count(dealerDetail.last12Rows), TicketMedio: dealerDetail.ticket(dealerDetail.last12Rows) },
+      { Mese: `YTD_${dealerDetail.currentYearValue}`, Erogato: ytdErogatoCurrent, Pratiche: ytdPraticheCurrent, TicketMedio: dealerDetail.ticket(dealerDetail.ytdCurrentRows) },
+      { Mese: `YTD_${dealerDetail.prevYearValue}`, Erogato: ytdErogatoPrev, Pratiche: ytdPratichePrev, TicketMedio: dealerDetail.ticket(dealerDetail.ytdPrevRows) },
+      { Mese: 'DELTA_YTD_EROGATO', Erogato: ytdErogatoCurrent - ytdErogatoPrev, Pratiche: 0, TicketMedio: 0 },
+      { Mese: 'DELTA_YTD_PRATICHE', Erogato: 0, Pratiche: ytdPraticheCurrent - ytdPratichePrev, TicketMedio: 0 },
+      { Mese: 'VARIAZIONE_YTD_EROGATO_%', Erogato: formatPct(diffPct(ytdErogatoCurrent, ytdErogatoPrev) as number | null), Pratiche: '', TicketMedio: '' },
+      { Mese: 'VARIAZIONE_YTD_PRATICHE_%', Erogato: formatPct(diffPct(ytdPraticheCurrent, ytdPratichePrev) as number | null), Pratiche: '', TicketMedio: '' },
+    );
+
+    const worksheet = XLSX.utils.json_to_sheet(rowsForExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Crescita Dealer');
+
+    const fileSafeDealer = selectedDealerDetail.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'dealer';
+    XLSX.writeFile(workbook, `export-crescita-${fileSafeDealer}.xlsx`);
+  }
+
   function importBackup(file: File) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -1956,7 +1991,7 @@ useEffect(() => {
             </div>}
             {dealerDetail && (
               <div className="panel">
-                <div className="panel-header"><h3>Scheda dealer: {selectedDealerDetail}</h3><button className="action-button" onClick={() => setSelectedDealerDetail(null)}><Home className="icon" />Torna alla lista dealer</button></div>
+                <div className="panel-header"><h3>Scheda dealer: {selectedDealerDetail}</h3><div className="hero-actions"><button className="action-button" onClick={exportDealerGrowthReport}><Download className="icon" />Export crescita dealer</button><button className="action-button" onClick={() => setSelectedDealerDetail(null)}><Home className="icon" />Torna alla lista dealer</button></div></div>
                 <section className="kpi-grid">
                   <KPI title="Erogato totale storico" value={euro0(dealerDetail.sum(dealerDetail.dealerRows))} icon={Euro} />
                   <KPI title="Erogato ultimi 12 mesi" value={euro0(dealerDetail.sum(dealerDetail.last12Rows))} icon={CalendarDays} />

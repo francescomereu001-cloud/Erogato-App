@@ -14,6 +14,7 @@ import {
   LineChart,
   Line,
   Legend,
+  Cell,
 } from 'recharts';
 import {
   Upload,
@@ -48,6 +49,8 @@ import {
 import './styles.css';
 import { supabase } from "./supabase";
 type SourceRow = Record<string, unknown>;
+
+const PRODUCT_COLORS = ['#2458E6', '#14B8A6', '#F59E0B', '#8B5CF6', '#0EA5E9', '#EC4899', '#22C55E', '#F97316'];
 
 type AppRow = {
   rowId: string;
@@ -1782,7 +1785,7 @@ useEffect(() => {
               </div>
               <div className="panel">
                 <div className="panel-header"><h3>Mix prodotto</h3><span>Ripartizione per prodotto</span></div>
-                <div className="chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={mix} dataKey="value" nameKey="name" outerRadius={90} label /><Tooltip formatter={(value: number) => euro(value)} /></PieChart></ResponsiveContainer></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={mix} dataKey="value" nameKey="name" outerRadius={92} innerRadius={40} paddingAngle={2} labelLine={false} label={({ percent }) => percent && percent >= 0.08 ? `${(percent * 100).toFixed(0)}%` : ""}>{mix.map((entry, index) => <Cell key={`mix-${entry.name}`} fill={PRODUCT_COLORS[index % PRODUCT_COLORS.length]} />)}</Pie><Tooltip formatter={(value: number) => euro(value)} /><Legend verticalAlign="bottom" height={44} wrapperStyle={{ fontSize: "12px", color: "#5c6f8f" }} /></PieChart></ResponsiveContainer></div>
               </div>
             </div>
 

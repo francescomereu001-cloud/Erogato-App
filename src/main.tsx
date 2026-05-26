@@ -299,6 +299,60 @@ function dateAtWorkingDayIndex(year: number, monthIndex: number, workingDayIndex
   return null;
 }
 
+type DealerCategory = 'AUTO' | 'POS';
+type DealerPortfolioStat = {
+  dealer: string;
+  category: DealerCategory;
+  erogato: number;
+  pratiche: number;
+  ticketMedio: number;
+  pesoTotalePct: number;
+  pesoCategoriaPct: number;
+};
+
+function getDealerCategory(autoAmount: number, posAmount: number): DealerCategory {
+  return autoAmount >= posAmount ? 'AUTO' : 'POS';
+}
+
+function buildDealerPortfolioStats(rows: AppRow[]) {
+  const byDealer = new Map<string, { dealer: string; totale: number; pratiche: number; auto: number; pos: number }>();
+  rows.forEach((row) => {
+    const dealer = (row.dealer || '').trim() || 'N/D';
+    const amount = Number(row.importoFinanziato);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (!byDealer.has(dealer)) byDealer.set(dealer, { dealer, totale: 0, pratiche: 0, auto: 0, pos: 0 });
+    const item = byDealer.get(dealer)!;
+    item.totale += amount;
+    item.pratiche += 1;
+    const family = getProductFamilyFromCode(String(row.prodottoCode || ''));
+    if (family === 'AUTO') item.auto += amount;
+    else if (family === 'POS') item.pos += amount;
+  });
+
+  const base = Array.from(byDealer.values()).map((row) => ({
+    dealer: row.dealer,
+    category: getDealerCategory(row.auto, row.pos),
+    erogato: row.totale,
+    pratiche: row.pratiche,
+    ticketMedio: row.pratiche ? row.totale / row.pratiche : 0,
+  }));
+  const totalErogato = base.reduce((sum, row) => sum + row.erogato, 0);
+  const totalAutoDealers = base.filter((r) => r.category === 'AUTO').reduce((sum, row) => sum + row.erogato, 0);
+  const totalPosDealers = base.filter((r) => r.category === 'POS').reduce((sum, row) => sum + row.erogato, 0);
+
+  const stats: DealerPortfolioStat[] = base
+    .map((row) => ({
+      ...row,
+      pesoTotalePct: totalErogato > 0 ? (row.erogato / totalErogato) * 100 : 0,
+      pesoCategoriaPct: row.category === 'AUTO'
+        ? (totalAutoDealers > 0 ? (row.erogato / totalAutoDealers) * 100 : 0)
+        : (totalPosDealers > 0 ? (row.erogato / totalPosDealers) * 100 : 0),
+    }))
+    .sort((a, b) => b.erogato - a.erogato);
+
+  return { stats, totalErogato, totalAutoDealers, totalPosDealers };
+}
+
 function buildDailyProgressComparison(rows: AppRow[], year: number, month: number) {
   const previousMonth = month === 1 ? 12 : month - 1;
   const previousMonthYear = month === 1 ? year - 1 : year;
@@ -925,6 +979,8 @@ function App() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [portfolioMonthFilter, setPortfolioMonthFilter] = useState('');
+  const [dealerWeightView, setDealerWeightView] = useState<'totale' | 'auto' | 'pos'>('totale');
 
   const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
     ['executive', 'Executive', Home],
@@ -1670,6 +1726,75 @@ useEffect(() => {
       duplicate: Array.from(duplicates.values()).filter((v) => v > 1).length,
     };
   }, [rows]);
+
+  const dealerWeightAnalytics = useMemo(() => {
+    const { stats, totalErogato, totalAutoDealers, totalPosDealers } = buildDealerPortfolioStats(filteredRows);
+    const autoStats = stats.filter((row) => row.category === 'AUTO');
+    const posStats = stats.filter((row) => row.category === 'POS');
+    const topDealer = stats[0] || null;
+    const top5Peso = stats.slice(0, 5).reduce((sum, row) => sum + row.pesoTotalePct, 0);
+    const topAutoDealer = autoStats[0] || null;
+    const topPosDealer = posStats[0] || null;
+    return { stats, autoStats, posStats, totalErogato, totalAutoDealers, totalPosDealers, topDealer, top5Peso, topAutoDealer, topPosDealer };
+  }, [filteredRows]);
+
+
+  const dealerWeightViewData = useMemo(() => {
+    const baseRows = dealerWeightView === 'totale'
+      ? dealerWeightAnalytics.stats
+      : dealerWeightView === 'auto'
+        ? dealerWeightAnalytics.autoStats
+        : dealerWeightAnalytics.posStats;
+    const tableRows = baseRows.slice(0, 15);
+    const chartRows = baseRows.slice(0, 10).map((row) => ({ dealer: row.dealer, erogato: row.erogato, category: row.category }));
+    const otherRows = baseRows.slice(10);
+    if (otherRows.length) {
+      chartRows.push({
+        dealer: 'Altri dealer',
+        erogato: otherRows.reduce((sum, row) => sum + row.erogato, 0),
+        category: dealerWeightView === 'pos' ? 'POS' : 'AUTO',
+      });
+    }
+    const subtitle = dealerWeightView === 'totale'
+      ? 'Incidenza dei principali dealer sull’erogato filtrato'
+      : dealerWeightView === 'auto'
+        ? 'Incidenza dei dealer AUTO sul totale dealer AUTO'
+        : 'Incidenza dei dealer POS sul totale dealer POS';
+    return { tableRows, chartRows, subtitle };
+  }, [dealerWeightView, dealerWeightAnalytics]);
+
+  const portfolioMonthOptions = useMemo(() => {
+    const months = new Map<string, { key: string; year: number; month: number; label: string }>();
+    filteredRows.forEach((row) => {
+      if (!row.dateISO || !row.year || !row.month) return;
+      const key = `${row.year}-${String(row.month).padStart(2, '0')}`;
+      if (!months.has(key)) months.set(key, { key, year: row.year, month: row.month, label: `${MONTHS_IT[row.month - 1]} ${row.year}` });
+    });
+    return Array.from(months.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [filteredRows]);
+
+  useEffect(() => {
+    if (!portfolioMonthOptions.length) {
+      if (portfolioMonthFilter) setPortfolioMonthFilter('');
+      return;
+    }
+    const currentMonthKey = `${currentYear}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    const hasCurrentMonth = portfolioMonthOptions.some((m) => m.key === currentMonthKey);
+    const fallback = portfolioMonthOptions[portfolioMonthOptions.length - 1]?.key || '';
+    const desired = hasCurrentMonth ? currentMonthKey : fallback;
+    if (!portfolioMonthFilter || !portfolioMonthOptions.some((m) => m.key === portfolioMonthFilter)) {
+      setPortfolioMonthFilter(desired);
+    }
+  }, [portfolioMonthOptions, portfolioMonthFilter, currentYear]);
+
+  const portfolioLatestRows = useMemo(() => {
+    if (!portfolioMonthFilter) return [];
+    return [...filteredRows]
+      .filter((row) => row.dateISO && `${row.year}-${String(row.month).padStart(2, '0')}` === portfolioMonthFilter)
+      .sort((a, b) => new Date(b.dateISO || 0).getTime() - new Date(a.dateISO || 0).getTime())
+      .slice(0, 200);
+  }, [filteredRows, portfolioMonthFilter]);
+
   const sectionTitles: Record<typeof tab, string> = {
     executive: 'Executive Dashboard',
     focus: 'Focus Mese',
@@ -2179,31 +2304,40 @@ useEffect(() => {
         )}
 
         {tab === 'portfolio' && (
-          <div className="panel">
-            <div className="panel-header"><h3>Ultime pratiche</h3><span>Archivio filtrato ordinato per data liquidazione</span></div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th>Tabella</th><th className="right">Importo</th><th className="right">Provv.</th><th className="right">Polizza</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...filteredRows].sort((a, b) => new Date(b.dateISO || 0).getTime() - new Date(a.dateISO || 0).getTime()).slice(0, 200).map((row) => (
-                    <tr key={row.rowId}>
-                      <td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td>
-                      <td>{row.dealer}</td>
-                      <td>{row.subagente}</td>
-                      <td>{row.cliente}</td>
-                      <td>{row.prodottoCode}</td>
-                      <td>{row.tabella || '-'}</td>
-                      <td className="right">{euro(row.importoFinanziato)}</td>
-                      <td className="right">{euro(row.provvigione)}</td>
-                      <td className="right">{euro(row.polizza)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="stack">
+            <div className="panel">
+              <div className="panel-header"><h3>Peso dealer su erogato</h3><span>{dealerWeightViewData.subtitle}</span></div>
+              <div className="mini-grid four">
+                <div className="mini-card"><div className="mini-label">Dealer più pesante</div><div className="mini-value">{dealerWeightAnalytics.topDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topDealer ? `${euro0(dealerWeightAnalytics.topDealer.erogato)} · ${pct(dealerWeightAnalytics.topDealer.pesoTotalePct / 100)}` : 'Nessun dato'}</div></div>
+                <div className="mini-card"><div className="mini-label">Peso Top 5 dealer</div><div className="mini-value">{pct(dealerWeightAnalytics.top5Peso / 100)}</div><div className="mini-note">Incidenza cumulata</div></div>
+                <div className="mini-card"><div className="mini-label">Dealer AUTO più rilevante</div><div className="mini-value">{dealerWeightAnalytics.topAutoDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topAutoDealer ? `${euro0(dealerWeightAnalytics.topAutoDealer.erogato)} · ${pct(dealerWeightAnalytics.topAutoDealer.pesoCategoriaPct / 100)}` : 'Nessun dato'}</div></div>
+                <div className="mini-card"><div className="mini-label">Dealer POS più rilevante</div><div className="mini-value">{dealerWeightAnalytics.topPosDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topPosDealer ? `${euro0(dealerWeightAnalytics.topPosDealer.erogato)} · ${pct(dealerWeightAnalytics.topPosDealer.pesoCategoriaPct / 100)}` : 'Nessun dato'}</div></div>
+              </div>
+              <div className="quick-pills">
+                <button className={`pill ${dealerWeightView === 'totale' ? 'active' : ''}`} onClick={() => setDealerWeightView('totale')}>Totale</button>
+                <button className={`pill ${dealerWeightView === 'auto' ? 'active' : ''}`} onClick={() => setDealerWeightView('auto')}>Dealer AUTO</button>
+                <button className={`pill ${dealerWeightView === 'pos' ? 'active' : ''}`} onClick={() => setDealerWeightView('pos')}>Dealer POS</button>
+              </div>
+              <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerWeightViewData.chartRows} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="dealer" width={190} /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="erogato" name="Erogato" fill="#2563eb">{dealerWeightViewData.chartRows.map((entry, index) => <Cell key={`dealer-weight-cell-${entry.dealer}-${index}`} fill={entry.category === 'AUTO' ? '#2563eb' : '#22c55e'} />)}</Bar></BarChart></ResponsiveContainer></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Dealer</th><th>Categoria dealer</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Peso %</th><th className="right">Ticket medio</th></tr></thead>
+                  <tbody>
+                    {dealerWeightViewData.tableRows.map((row) => <tr key={`dw-${dealerWeightView}-${row.dealer}`}><td>{row.dealer}</td><td><span className="badge">{row.category}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct((dealerWeightView === 'totale' ? row.pesoTotalePct : row.pesoCategoriaPct) / 100)}</td><td className="right">{euro(row.ticketMedio)}</td></tr>)}
+                    {!dealerWeightViewData.tableRows.length && <tr><td colSpan={6}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Ultime pratiche</h3><span>Vista mensile ordinata per data liquidazione</span></div>
+              <div className="filters-grid period-grid">
+                <select className="select" value={portfolioMonthFilter} onChange={(e) => setPortfolioMonthFilter(e.target.value)}>
+                  {portfolioMonthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+                </select>
+                <div className="readonly">{portfolioLatestRows.length} pratiche</div>
+              </div>
+              <div className="table-wrap"><table><thead><tr><th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th>Tabella</th><th className="right">Importo</th><th className="right">Provv.</th><th className="right">Polizza</th></tr></thead><tbody>{portfolioLatestRows.map((row) => <tr key={row.rowId}><td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td><td>{row.dealer}</td><td>{row.subagente}</td><td>{row.cliente}</td><td>{row.prodottoCode}</td><td>{row.tabella || '-'}</td><td className="right">{euro(row.importoFinanziato)}</td><td className="right">{euro(row.provvigione)}</td><td className="right">{euro(row.polizza)}</td></tr>)}{!portfolioLatestRows.length && <tr><td colSpan={9}>Nessuna pratica per il mese selezionato.</td></tr>}</tbody></table></div>
             </div>
           </div>
         )}

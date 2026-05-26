@@ -299,6 +299,60 @@ function dateAtWorkingDayIndex(year: number, monthIndex: number, workingDayIndex
   return null;
 }
 
+type DealerCategory = 'AUTO' | 'POS';
+type DealerPortfolioStat = {
+  dealer: string;
+  category: DealerCategory;
+  erogato: number;
+  pratiche: number;
+  ticketMedio: number;
+  pesoTotalePct: number;
+  pesoCategoriaPct: number;
+};
+
+function getDealerCategory(autoAmount: number, posAmount: number): DealerCategory {
+  return autoAmount >= posAmount ? 'AUTO' : 'POS';
+}
+
+function buildDealerPortfolioStats(rows: AppRow[]) {
+  const byDealer = new Map<string, { dealer: string; totale: number; pratiche: number; auto: number; pos: number }>();
+  rows.forEach((row) => {
+    const dealer = (row.dealer || '').trim() || 'N/D';
+    const amount = Number(row.importoFinanziato);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (!byDealer.has(dealer)) byDealer.set(dealer, { dealer, totale: 0, pratiche: 0, auto: 0, pos: 0 });
+    const item = byDealer.get(dealer)!;
+    item.totale += amount;
+    item.pratiche += 1;
+    const family = getProductFamilyFromCode(String(row.prodottoCode || ''));
+    if (family === 'AUTO') item.auto += amount;
+    else if (family === 'POS') item.pos += amount;
+  });
+
+  const base = Array.from(byDealer.values()).map((row) => ({
+    dealer: row.dealer,
+    category: getDealerCategory(row.auto, row.pos),
+    erogato: row.totale,
+    pratiche: row.pratiche,
+    ticketMedio: row.pratiche ? row.totale / row.pratiche : 0,
+  }));
+  const totalErogato = base.reduce((sum, row) => sum + row.erogato, 0);
+  const totalAutoDealers = base.filter((r) => r.category === 'AUTO').reduce((sum, row) => sum + row.erogato, 0);
+  const totalPosDealers = base.filter((r) => r.category === 'POS').reduce((sum, row) => sum + row.erogato, 0);
+
+  const stats: DealerPortfolioStat[] = base
+    .map((row) => ({
+      ...row,
+      pesoTotalePct: totalErogato > 0 ? (row.erogato / totalErogato) * 100 : 0,
+      pesoCategoriaPct: row.category === 'AUTO'
+        ? (totalAutoDealers > 0 ? (row.erogato / totalAutoDealers) * 100 : 0)
+        : (totalPosDealers > 0 ? (row.erogato / totalPosDealers) * 100 : 0),
+    }))
+    .sort((a, b) => b.erogato - a.erogato);
+
+  return { stats, totalErogato, totalAutoDealers, totalPosDealers };
+}
+
 function buildDailyProgressComparison(rows: AppRow[], year: number, month: number) {
   const previousMonth = month === 1 ? 12 : month - 1;
   const previousMonthYear = month === 1 ? year - 1 : year;
@@ -1674,68 +1728,33 @@ useEffect(() => {
   }, [rows]);
 
   const dealerWeightAnalytics = useMemo(() => {
-    const byDealer = new Map<string, { dealer: string; totale: number; pratiche: number; auto: number; pos: number }>();
-    filteredRows.forEach((row) => {
-      const dealer = (row.dealer || '').trim() || 'N/D';
-      const amount = Number(row.importoFinanziato);
-      if (!Number.isFinite(amount) || amount <= 0) return;
-      if (!byDealer.has(dealer)) byDealer.set(dealer, { dealer, totale: 0, pratiche: 0, auto: 0, pos: 0 });
-      const item = byDealer.get(dealer)!;
-      item.totale += amount;
-      item.pratiche += 1;
-      const family = getProductFamilyFromCode(String(row.prodottoCode || ''));
-      if (family === 'AUTO') item.auto += amount;
-      else item.pos += amount;
-    });
-
-    const totalErogato = Array.from(byDealer.values()).reduce((sum, row) => sum + row.totale, 0);
-    const sorted = Array.from(byDealer.values()).sort((a, b) => b.totale - a.totale);
-    const top10Raw = sorted.slice(0, 10);
-    const altri = sorted.slice(10).reduce((acc, row) => ({ ...acc, totale: acc.totale + row.totale, pratiche: acc.pratiche + row.pratiche, auto: acc.auto + row.auto, pos: acc.pos + row.pos }), { dealer: 'Altri dealer', totale: 0, pratiche: 0, auto: 0, pos: 0 });
-    const toRow = (row: { dealer: string; totale: number; pratiche: number; auto: number; pos: number }) => ({
-      ...row,
-      pesoPct: totalErogato > 0 ? (row.totale / totalErogato) * 100 : 0,
-      autoPct: row.totale > 0 ? (row.auto / row.totale) * 100 : 0,
-      posPct: row.totale > 0 ? (row.pos / row.totale) * 100 : 0,
-      mixPrevalente: row.auto >= row.pos ? 'AUTO' : 'POS',
-      familyType: row.auto >= row.pos ? 'AUTO' : 'POS',
-    });
-    const top10 = top10Raw.map(toRow);
-    const chartData = altri.totale > 0 ? [...top10.map((r) => ({ dealer: r.dealer, AUTO: r.auto, POS: r.pos, Totale: r.totale })), { dealer: altri.dealer, AUTO: altri.auto, POS: altri.pos, Totale: altri.totale }] : top10.map((r) => ({ dealer: r.dealer, AUTO: r.auto, POS: r.pos, Totale: r.totale }));
-
-    const topDealer = top10[0] || null;
-
-    const autoDealers = sorted.map(toRow).filter((r) => r.familyType === 'AUTO');
-    const posDealers = sorted.map(toRow).filter((r) => r.familyType === 'POS');
-    const autoTotal = autoDealers.reduce((sum, r) => sum + r.totale, 0);
-    const posTotal = posDealers.reduce((sum, r) => sum + r.totale, 0);
-    const autoTop10 = autoDealers.slice(0, 10).map((r) => ({ ...r, pesoFamilyPct: autoTotal > 0 ? (r.totale / autoTotal) * 100 : 0 }));
-    const posTop10 = posDealers.slice(0, 10).map((r) => ({ ...r, pesoFamilyPct: posTotal > 0 ? (r.totale / posTotal) * 100 : 0 }));
-    const top5Peso = top10.slice(0, 5).reduce((sum, row) => sum + row.pesoPct, 0);
-    const topAuto = top10.filter((r) => r.auto > 0).sort((a, b) => b.auto - a.auto)[0];
-    const topPos = top10.filter((r) => r.pos > 0).sort((a, b) => b.pos - a.pos)[0];
-    const familyLeader = (topAuto && (!topPos || topAuto.auto >= topPos.pos))
-      ? { label: 'Dealer AUTO più rilevante', dealer: topAuto.dealer, importo: topAuto.auto }
-      : topPos
-        ? { label: 'Dealer POS più rilevante', dealer: topPos.dealer, importo: topPos.pos }
-        : null;
-
-    return { totalErogato, top10, chartData, topDealer, top5Peso, familyLeader, autoTop10, posTop10, autoTotal, posTotal };
+    const { stats, totalErogato, totalAutoDealers, totalPosDealers } = buildDealerPortfolioStats(filteredRows);
+    const autoStats = stats.filter((row) => row.category === 'AUTO');
+    const posStats = stats.filter((row) => row.category === 'POS');
+    const topDealer = stats[0] || null;
+    const top5Peso = stats.slice(0, 5).reduce((sum, row) => sum + row.pesoTotalePct, 0);
+    const topAutoDealer = autoStats[0] || null;
+    const topPosDealer = posStats[0] || null;
+    return { stats, autoStats, posStats, totalErogato, totalAutoDealers, totalPosDealers, topDealer, top5Peso, topAutoDealer, topPosDealer };
   }, [filteredRows]);
 
 
   const dealerWeightViewData = useMemo(() => {
     const baseRows = dealerWeightView === 'totale'
-      ? dealerWeightAnalytics.top10
+      ? dealerWeightAnalytics.stats
       : dealerWeightView === 'auto'
-        ? dealerWeightAnalytics.autoTop10
-        : dealerWeightAnalytics.posTop10;
-    const tableRows = baseRows;
-    const chartRows = baseRows.map((row) => ({
-      dealer: row.dealer,
-      AUTO: dealerWeightView === 'pos' ? 0 : row.auto,
-      POS: dealerWeightView === 'auto' ? 0 : row.pos,
-    }));
+        ? dealerWeightAnalytics.autoStats
+        : dealerWeightAnalytics.posStats;
+    const tableRows = baseRows.slice(0, 15);
+    const chartRows = baseRows.slice(0, 10).map((row) => ({ dealer: row.dealer, erogato: row.erogato, category: row.category }));
+    const otherRows = baseRows.slice(10);
+    if (otherRows.length) {
+      chartRows.push({
+        dealer: 'Altri dealer',
+        erogato: otherRows.reduce((sum, row) => sum + row.erogato, 0),
+        category: dealerWeightView === 'pos' ? 'POS' : 'AUTO',
+      });
+    }
     const subtitle = dealerWeightView === 'totale'
       ? 'Incidenza dei principali dealer sull’erogato filtrato'
       : dealerWeightView === 'auto'
@@ -2288,23 +2307,24 @@ useEffect(() => {
           <div className="stack">
             <div className="panel">
               <div className="panel-header"><h3>Peso dealer su erogato</h3><span>{dealerWeightViewData.subtitle}</span></div>
-              <div className="mini-grid three">
-                <div className="mini-card"><div className="mini-label">Dealer più pesante</div><div className="mini-value">{dealerWeightAnalytics.topDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topDealer ? `${euro0(dealerWeightAnalytics.topDealer.totale)} · ${pct(dealerWeightAnalytics.topDealer.pesoPct / 100)}` : 'Nessun dato'}</div></div>
+              <div className="mini-grid four">
+                <div className="mini-card"><div className="mini-label">Dealer più pesante</div><div className="mini-value">{dealerWeightAnalytics.topDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topDealer ? `${euro0(dealerWeightAnalytics.topDealer.erogato)} · ${pct(dealerWeightAnalytics.topDealer.pesoTotalePct / 100)}` : 'Nessun dato'}</div></div>
                 <div className="mini-card"><div className="mini-label">Peso Top 5 dealer</div><div className="mini-value">{pct(dealerWeightAnalytics.top5Peso / 100)}</div><div className="mini-note">Incidenza cumulata</div></div>
-                <div className="mini-card"><div className="mini-label">{dealerWeightAnalytics.familyLeader?.label || 'Dealer famiglia rilevante'}</div><div className="mini-value">{dealerWeightAnalytics.familyLeader?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.familyLeader ? euro0(dealerWeightAnalytics.familyLeader.importo) : 'Nessun dato'}</div></div>
+                <div className="mini-card"><div className="mini-label">Dealer AUTO più rilevante</div><div className="mini-value">{dealerWeightAnalytics.topAutoDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topAutoDealer ? `${euro0(dealerWeightAnalytics.topAutoDealer.erogato)} · ${pct(dealerWeightAnalytics.topAutoDealer.pesoCategoriaPct / 100)}` : 'Nessun dato'}</div></div>
+                <div className="mini-card"><div className="mini-label">Dealer POS più rilevante</div><div className="mini-value">{dealerWeightAnalytics.topPosDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topPosDealer ? `${euro0(dealerWeightAnalytics.topPosDealer.erogato)} · ${pct(dealerWeightAnalytics.topPosDealer.pesoCategoriaPct / 100)}` : 'Nessun dato'}</div></div>
               </div>
               <div className="quick-pills">
                 <button className={`pill ${dealerWeightView === 'totale' ? 'active' : ''}`} onClick={() => setDealerWeightView('totale')}>Totale</button>
                 <button className={`pill ${dealerWeightView === 'auto' ? 'active' : ''}`} onClick={() => setDealerWeightView('auto')}>Dealer AUTO</button>
                 <button className={`pill ${dealerWeightView === 'pos' ? 'active' : ''}`} onClick={() => setDealerWeightView('pos')}>Dealer POS</button>
               </div>
-              <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerWeightView === 'totale' ? dealerWeightAnalytics.chartData : dealerWeightViewData.chartRows} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="dealer" width={190} /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" stackId="a" fill="#2563eb" /><Bar dataKey="POS" stackId="a" fill="#22c55e" /></BarChart></ResponsiveContainer></div>
+              <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerWeightViewData.chartRows} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="dealer" width={190} /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="erogato" name="Erogato" fill="#2563eb">{dealerWeightViewData.chartRows.map((entry, index) => <Cell key={`dealer-weight-cell-${entry.dealer}-${index}`} fill={entry.category === 'AUTO' ? '#2563eb' : '#22c55e'} />)}</Bar></BarChart></ResponsiveContainer></div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Dealer</th><th className="right">Erogato totale</th><th className="right">Pratiche</th><th className="right">Peso %</th><th className="right">AUTO</th><th className="right">POS</th><th>Mix prevalente</th></tr></thead>
+                  <thead><tr><th>Dealer</th><th>Categoria dealer</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Peso %</th><th className="right">Ticket medio</th></tr></thead>
                   <tbody>
-                    {dealerWeightViewData.tableRows.map((row) => <tr key={`dw-${dealerWeightView}-${row.dealer}`}><td>{row.dealer}</td><td className="right">{euro(row.totale)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct((dealerWeightView === 'totale' ? row.pesoPct : row.pesoFamilyPct) / 100)}</td><td className="right">{euro(row.auto)}</td><td className="right">{euro(row.pos)}</td><td><span className="badge">{row.mixPrevalente}</span></td></tr>)}
-                    {!dealerWeightViewData.tableRows.length && <tr><td colSpan={7}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
+                    {dealerWeightViewData.tableRows.map((row) => <tr key={`dw-${dealerWeightView}-${row.dealer}`}><td>{row.dealer}</td><td><span className="badge">{row.category}</span></td><td className="right">{euro(row.erogato)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct((dealerWeightView === 'totale' ? row.pesoTotalePct : row.pesoCategoriaPct) / 100)}</td><td className="right">{euro(row.ticketMedio)}</td></tr>)}
+                    {!dealerWeightViewData.tableRows.length && <tr><td colSpan={6}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
                   </tbody>
                 </table>
               </div>

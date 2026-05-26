@@ -2370,11 +2370,17 @@ useEffect(() => {
                 {MONTHS_IT.map((month, index) => (
                   <div key={month}>
                     <div className="month-label">{month}</div>
-                    <input className="input" value={settings.stagionalitaByYear?.[currentYear]?.[index] ?? ''} onChange={(e) => {
-                      const copy = [...(settings.stagionalitaByYear?.[currentYear] || Array(12).fill(0))];
-                      copy[index] = Number(e.target.value || 0);
-                      setSettings((prev) => ({ ...prev, stagionalitaByYear: { ...prev.stagionalitaByYear, [currentYear]: copy } }));
-                    }} />
+                    <input
+                      className="input"
+                      type="number"
+                      step="0.01"
+                      value={((settings.stagionalitaByYear?.[currentYear]?.[index] || 0) * 100).toFixed(2)}
+                      onChange={(e) => {
+                        const copy = [...(settings.stagionalitaByYear?.[currentYear] || Array(12).fill(0))];
+                        copy[index] = Number(e.target.value || 0) / 100;
+                        setSettings((prev) => ({ ...prev, stagionalitaByYear: { ...prev.stagionalitaByYear, [currentYear]: copy } }));
+                      }}
+                    />
                   </div>
                 ))}
               </div>

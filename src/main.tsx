@@ -1485,6 +1485,84 @@ useEffect(() => {
     URL.revokeObjectURL(url);
   }
 
+
+
+  function exportDealerGrowthPdf() {
+    if (!dealerDetail || !selectedDealerDetail) return;
+
+    const formatPct = (value: number | null) => value === null ? 'n/d' : `${num(value * 100, 1)}%`;
+    const ytdErogatoCurrent = dealerDetail.sum(dealerDetail.ytdCurrentRows);
+    const ytdErogatoPrev = dealerDetail.sum(dealerDetail.ytdPrevRows);
+    const ytdPraticheCurrent = dealerDetail.count(dealerDetail.ytdCurrentRows);
+    const ytdPratichePrev = dealerDetail.count(dealerDetail.ytdPrevRows);
+    const ytdTicketCurrent = dealerDetail.ticket(dealerDetail.ytdCurrentRows);
+    const ytdTicketPrev = dealerDetail.ticket(dealerDetail.ytdPrevRows);
+
+    const printable = window.open('', '_blank');
+    if (!printable) return;
+
+    const monthlyRows = dealerDetail.last12Monthly.map((m) => `
+      <tr>
+        <td>${m.month}</td>
+        <td class="right">${euro(m.erogato)}</td>
+        <td class="right">${num(m.pratiche)}</td>
+        <td class="right">${euro(m.ticketMedio)}</td>
+      </tr>`).join('');
+
+    const html = `<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<title>Report Crescita ${selectedDealerDetail}</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 28px; color: #0f172a; }
+  .header { border-bottom: 2px solid #0ea5e9; padding-bottom: 12px; margin-bottom: 16px; }
+  .title { font-size: 24px; font-weight: 700; }
+  .subtitle { color: #334155; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin: 16px 0; }
+  .card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px; background: #f8fafc; }
+  .label { font-size: 11px; color: #475569; text-transform: uppercase; }
+  .value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+  th, td { border: 1px solid #cbd5e1; padding: 8px; font-size: 12px; }
+  th { background: #e2e8f0; text-align: left; }
+  .right { text-align: right; }
+  .foot { margin-top: 16px; font-size: 11px; color: #64748b; }
+  @media print { body { margin: 16px; } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">Report crescita convenzione</div>
+    <div class="subtitle">Dealer: <strong>${selectedDealerDetail}</strong> · Generato il ${new Date().toLocaleDateString('it-IT')}</div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><div class="label">Erogato ultimi 12 mesi</div><div class="value">${euro0(dealerDetail.sum(dealerDetail.last12Rows))}</div></div>
+    <div class="card"><div class="label">Crescita YTD erogato</div><div class="value">${euro0(ytdErogatoCurrent - ytdErogatoPrev)} (${formatPct(diffPct(ytdErogatoCurrent, ytdErogatoPrev))})</div></div>
+    <div class="card"><div class="label">Crescita YTD pratiche</div><div class="value">${num(ytdPraticheCurrent - ytdPratichePrev)} (${formatPct(diffPct(ytdPraticheCurrent, ytdPratichePrev))})</div></div>
+    <div class="card"><div class="label">YTD ${dealerDetail.currentYearValue}</div><div class="value">${euro0(ytdErogatoCurrent)}</div></div>
+    <div class="card"><div class="label">YTD ${dealerDetail.prevYearValue}</div><div class="value">${euro0(ytdErogatoPrev)}</div></div>
+    <div class="card"><div class="label">Ticket YTD ${dealerDetail.currentYearValue} vs ${dealerDetail.prevYearValue}</div><div class="value">${euro0(ytdTicketCurrent)} / ${euro0(ytdTicketPrev)}</div></div>
+  </div>
+
+  <h3>Andamento ultimi 12 mesi</h3>
+  <table>
+    <thead><tr><th>Mese</th><th class="right">Erogato</th><th class="right">Pratiche</th><th class="right">Ticket medio</th></tr></thead>
+    <tbody>${monthlyRows}</tbody>
+  </table>
+
+  <div class="foot">Documento ottimizzato per stampa PDF (A4): usa "Salva come PDF" nella finestra di stampa.</div>
+
+  <script>window.onload = () => { setTimeout(() => window.print(), 250); };</script>
+</body>
+</html>`;
+
+    printable.document.open();
+    printable.document.write(html);
+    printable.document.close();
+  }
+
   function importBackup(file: File) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -1956,7 +2034,7 @@ useEffect(() => {
             </div>}
             {dealerDetail && (
               <div className="panel">
-                <div className="panel-header"><h3>Scheda dealer: {selectedDealerDetail}</h3><button className="action-button" onClick={() => setSelectedDealerDetail(null)}><Home className="icon" />Torna alla lista dealer</button></div>
+                <div className="panel-header"><h3>Scheda dealer: {selectedDealerDetail}</h3><div className="hero-actions"><button className="action-button" onClick={exportDealerGrowthPdf}><Download className="icon" />Report PDF dealer</button><button className="action-button" onClick={() => setSelectedDealerDetail(null)}><Home className="icon" />Torna alla lista dealer</button></div></div>
                 <section className="kpi-grid">
                   <KPI title="Erogato totale storico" value={euro0(dealerDetail.sum(dealerDetail.dealerRows))} icon={Euro} />
                   <KPI title="Erogato ultimi 12 mesi" value={euro0(dealerDetail.sum(dealerDetail.last12Rows))} icon={CalendarDays} />

@@ -234,6 +234,7 @@ tr:last-child td { border-bottom: none; }
 .list-value { font-weight: 700; }
 
 .mini-grid.four { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.mini-grid.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .mini-card { padding: 16px; }
 .mini-label { font-size: 13px; color: var(--muted); }
 .mini-value { font-size: 24px; font-weight: 700; margin-top: 8px; }
@@ -265,6 +266,7 @@ tr:last-child td { border-bottom: none; }
   .dashboard-grid { grid-template-columns: repeat(3, 1fr); }
   .kpi-grid { grid-template-columns: repeat(3, 1fr); }
   .mini-grid.four { grid-template-columns: repeat(2, 1fr); }
+  .mini-grid.three { grid-template-columns: 1fr; }
   .mode-cards { grid-template-columns: repeat(2, 1fr); }
   .months-grid { grid-template-columns: repeat(3, 1fr); }
   .filters-top { grid-template-columns: 1fr; }
@@ -326,7 +328,7 @@ tr:last-child td { border-bottom: none; }
   .executive-daily-controls { grid-template-columns: 1fr; }
   .executive-daily-select { min-width: 0; }
   .input, .select { width: 100%; }
-  .kpi-grid, .dashboard-grid, .mini-grid.four, .mode-cards { grid-template-columns: 1fr; gap: 10px; }
+  .kpi-grid, .dashboard-grid, .mini-grid.four, .mini-grid.three, .mode-cards { grid-template-columns: 1fr; gap: 10px; }
   .kpi-card { padding: 12px; }
   .kpi-value { font-size: 1.1rem; margin-top: 4px; }
   .kpi-icon { width: 34px; height: 34px; }

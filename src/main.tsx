@@ -925,6 +925,7 @@ function App() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [portfolioMonthFilter, setPortfolioMonthFilter] = useState('');
 
   const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
     ['executive', 'Executive', Home],
@@ -1670,6 +1671,81 @@ useEffect(() => {
       duplicate: Array.from(duplicates.values()).filter((v) => v > 1).length,
     };
   }, [rows]);
+
+  const dealerWeightAnalytics = useMemo(() => {
+    const byDealer = new Map<string, { dealer: string; totale: number; pratiche: number; auto: number; pos: number }>();
+    filteredRows.forEach((row) => {
+      const dealer = (row.dealer || '').trim() || 'N/D';
+      const amount = Number(row.importoFinanziato);
+      if (!Number.isFinite(amount) || amount <= 0) return;
+      if (!byDealer.has(dealer)) byDealer.set(dealer, { dealer, totale: 0, pratiche: 0, auto: 0, pos: 0 });
+      const item = byDealer.get(dealer)!;
+      item.totale += amount;
+      item.pratiche += 1;
+      const family = getProductFamilyFromCode(String(row.prodottoCode || ''));
+      if (family === 'AUTO') item.auto += amount;
+      else item.pos += amount;
+    });
+
+    const totalErogato = Array.from(byDealer.values()).reduce((sum, row) => sum + row.totale, 0);
+    const sorted = Array.from(byDealer.values()).sort((a, b) => b.totale - a.totale);
+    const top10Raw = sorted.slice(0, 10);
+    const altri = sorted.slice(10).reduce((acc, row) => ({ ...acc, totale: acc.totale + row.totale, pratiche: acc.pratiche + row.pratiche, auto: acc.auto + row.auto, pos: acc.pos + row.pos }), { dealer: 'Altri dealer', totale: 0, pratiche: 0, auto: 0, pos: 0 });
+    const toRow = (row: { dealer: string; totale: number; pratiche: number; auto: number; pos: number }) => ({
+      ...row,
+      pesoPct: totalErogato > 0 ? (row.totale / totalErogato) * 100 : 0,
+      autoPct: row.totale > 0 ? (row.auto / row.totale) * 100 : 0,
+      posPct: row.totale > 0 ? (row.pos / row.totale) * 100 : 0,
+      mixPrevalente: row.auto >= row.pos ? 'AUTO' : 'POS',
+    });
+    const top10 = top10Raw.map(toRow);
+    const chartData = altri.totale > 0 ? [...top10.map((r) => ({ dealer: r.dealer, AUTO: r.auto, POS: r.pos, Totale: r.totale })), { dealer: altri.dealer, AUTO: altri.auto, POS: altri.pos, Totale: altri.totale }] : top10.map((r) => ({ dealer: r.dealer, AUTO: r.auto, POS: r.pos, Totale: r.totale }));
+
+    const topDealer = top10[0] || null;
+    const top5Peso = top10.slice(0, 5).reduce((sum, row) => sum + row.pesoPct, 0);
+    const topAuto = top10.filter((r) => r.auto > 0).sort((a, b) => b.auto - a.auto)[0];
+    const topPos = top10.filter((r) => r.pos > 0).sort((a, b) => b.pos - a.pos)[0];
+    const familyLeader = (topAuto && (!topPos || topAuto.auto >= topPos.pos))
+      ? { label: 'Dealer AUTO più rilevante', dealer: topAuto.dealer, importo: topAuto.auto }
+      : topPos
+        ? { label: 'Dealer POS più rilevante', dealer: topPos.dealer, importo: topPos.pos }
+        : null;
+
+    return { totalErogato, top10, chartData, topDealer, top5Peso, familyLeader };
+  }, [filteredRows]);
+
+  const portfolioMonthOptions = useMemo(() => {
+    const months = new Map<string, { key: string; year: number; month: number; label: string }>();
+    filteredRows.forEach((row) => {
+      if (!row.dateISO || !row.year || !row.month) return;
+      const key = `${row.year}-${String(row.month).padStart(2, '0')}`;
+      if (!months.has(key)) months.set(key, { key, year: row.year, month: row.month, label: `${MONTHS_IT[row.month - 1]} ${row.year}` });
+    });
+    return Array.from(months.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [filteredRows]);
+
+  useEffect(() => {
+    if (!portfolioMonthOptions.length) {
+      if (portfolioMonthFilter) setPortfolioMonthFilter('');
+      return;
+    }
+    const currentMonthKey = `${currentYear}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    const hasCurrentMonth = portfolioMonthOptions.some((m) => m.key === currentMonthKey);
+    const fallback = portfolioMonthOptions[portfolioMonthOptions.length - 1]?.key || '';
+    const desired = hasCurrentMonth ? currentMonthKey : fallback;
+    if (!portfolioMonthFilter || !portfolioMonthOptions.some((m) => m.key === portfolioMonthFilter)) {
+      setPortfolioMonthFilter(desired);
+    }
+  }, [portfolioMonthOptions, portfolioMonthFilter, currentYear]);
+
+  const portfolioLatestRows = useMemo(() => {
+    if (!portfolioMonthFilter) return [];
+    return [...filteredRows]
+      .filter((row) => row.dateISO && `${row.year}-${String(row.month).padStart(2, '0')}` === portfolioMonthFilter)
+      .sort((a, b) => new Date(b.dateISO || 0).getTime() - new Date(a.dateISO || 0).getTime())
+      .slice(0, 200);
+  }, [filteredRows, portfolioMonthFilter]);
+
   const sectionTitles: Record<typeof tab, string> = {
     executive: 'Executive Dashboard',
     focus: 'Focus Mese',
@@ -2179,31 +2255,34 @@ useEffect(() => {
         )}
 
         {tab === 'portfolio' && (
-          <div className="panel">
-            <div className="panel-header"><h3>Ultime pratiche</h3><span>Archivio filtrato ordinato per data liquidazione</span></div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th>Tabella</th><th className="right">Importo</th><th className="right">Provv.</th><th className="right">Polizza</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...filteredRows].sort((a, b) => new Date(b.dateISO || 0).getTime() - new Date(a.dateISO || 0).getTime()).slice(0, 200).map((row) => (
-                    <tr key={row.rowId}>
-                      <td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td>
-                      <td>{row.dealer}</td>
-                      <td>{row.subagente}</td>
-                      <td>{row.cliente}</td>
-                      <td>{row.prodottoCode}</td>
-                      <td>{row.tabella || '-'}</td>
-                      <td className="right">{euro(row.importoFinanziato)}</td>
-                      <td className="right">{euro(row.provvigione)}</td>
-                      <td className="right">{euro(row.polizza)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="stack">
+            <div className="panel">
+              <div className="panel-header"><h3>Peso dealer su erogato</h3><span>Incidenza dei principali dealer sull’erogato filtrato</span></div>
+              <div className="mini-grid three">
+                <div className="mini-card"><div className="mini-label">Dealer più pesante</div><div className="mini-value">{dealerWeightAnalytics.topDealer?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.topDealer ? `${euro0(dealerWeightAnalytics.topDealer.totale)} · ${pct(dealerWeightAnalytics.topDealer.pesoPct / 100)}` : 'Nessun dato'}</div></div>
+                <div className="mini-card"><div className="mini-label">Peso Top 5 dealer</div><div className="mini-value">{pct(dealerWeightAnalytics.top5Peso / 100)}</div><div className="mini-note">Incidenza cumulata</div></div>
+                <div className="mini-card"><div className="mini-label">{dealerWeightAnalytics.familyLeader?.label || 'Dealer famiglia rilevante'}</div><div className="mini-value">{dealerWeightAnalytics.familyLeader?.dealer || '-'}</div><div className="mini-note">{dealerWeightAnalytics.familyLeader ? euro0(dealerWeightAnalytics.familyLeader.importo) : 'Nessun dato'}</div></div>
+              </div>
+              <div className="chart tall"><ResponsiveContainer width="100%" height="100%"><BarChart data={dealerWeightAnalytics.chartData} layout="vertical" margin={{ left: 8, right: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="dealer" width={190} /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Bar dataKey="AUTO" stackId="a" fill="#2563eb" /><Bar dataKey="POS" stackId="a" fill="#22c55e" /></BarChart></ResponsiveContainer></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Dealer</th><th className="right">Erogato totale</th><th className="right">Pratiche</th><th className="right">Peso %</th><th className="right">AUTO</th><th className="right">POS</th><th>Mix prevalente</th></tr></thead>
+                  <tbody>
+                    {dealerWeightAnalytics.top10.map((row) => <tr key={`dw-${row.dealer}`}><td>{row.dealer}</td><td className="right">{euro(row.totale)}</td><td className="right">{num(row.pratiche)}</td><td className="right">{pct(row.pesoPct / 100)}</td><td className="right">{euro(row.auto)}</td><td className="right">{euro(row.pos)}</td><td><span className="badge">{row.mixPrevalente}</span></td></tr>)}
+                    {!dealerWeightAnalytics.top10.length && <tr><td colSpan={7}>Nessun dealer disponibile nel filtro corrente.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Ultime pratiche</h3><span>Vista mensile ordinata per data liquidazione</span></div>
+              <div className="filters-grid period-grid">
+                <select className="select" value={portfolioMonthFilter} onChange={(e) => setPortfolioMonthFilter(e.target.value)}>
+                  {portfolioMonthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+                </select>
+                <div className="readonly">{portfolioLatestRows.length} pratiche</div>
+              </div>
+              <div className="table-wrap"><table><thead><tr><th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th>Tabella</th><th className="right">Importo</th><th className="right">Provv.</th><th className="right">Polizza</th></tr></thead><tbody>{portfolioLatestRows.map((row) => <tr key={row.rowId}><td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td><td>{row.dealer}</td><td>{row.subagente}</td><td>{row.cliente}</td><td>{row.prodottoCode}</td><td>{row.tabella || '-'}</td><td className="right">{euro(row.importoFinanziato)}</td><td className="right">{euro(row.provvigione)}</td><td className="right">{euro(row.polizza)}</td></tr>)}{!portfolioLatestRows.length && <tr><td colSpan={9}>Nessuna pratica per il mese selezionato.</td></tr>}</tbody></table></div>
             </div>
           </div>
         )}

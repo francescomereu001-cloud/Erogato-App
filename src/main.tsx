@@ -1614,6 +1614,8 @@ useEffect(() => {
   const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
   const previousYearSameMonth = monthSeriesFromRows(rows, currentYear - 1)[currentMonthIndex - 1];
   const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : 0;
+  const previousMonthCard = currentMonthIndex > 1 ? monthlyData[currentMonthIndex - 2] : null;
+  const monthVsPrevMonth = previousMonthCard?.erogato ? (currentMonthCard?.erogato || 0) / previousMonthCard.erogato - 1 : 0;
   const topFiveDealers = smartDealerTable.slice(0, 5);
   const alertsBySeverity = useMemo(() => ({
     alta: dealerAlerts.filter((a) => a.severity === 'alta'),
@@ -2093,7 +2095,7 @@ useEffect(() => {
             <div className="mini-grid four">
               <div className="mini-card"><div className="mini-label">Focus mese</div><div className="mini-value">{MONTHS_IT[referenceMonth - 1]}</div></div>
               <div className="mini-card"><div className="mini-label">Erogato mese</div><div className="mini-value">{euro0(currentMonthCard?.erogato || 0)}</div></div>
-              <div className="mini-card"><div className="mini-label">Vs anno precedente</div><div className="mini-value">{pct(monthVsPrevYear)}</div></div>
+              <div className="mini-card"><div className="mini-label">Vs anno precedente</div><div className="mini-value">{pct(monthVsPrevYear)}</div><div className="mini-note">Vs mese precedente: {pct(monthVsPrevMonth)}</div></div>
               <div className="mini-card"><div className="mini-label">Dealer top 5</div><div className="mini-value">{num(topFiveDealers.length)}</div></div>
             </div>
             <div className="panel">

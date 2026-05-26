@@ -347,3 +347,5 @@ tr:last-child td { border-bottom: none; }
   .panel-header h3 { font-size: 17px; }
   .chart { height: 210px; }
 }
+
+.table-total-row td { font-weight: 700; background: #f8fbff; border-top: 2px solid #dbe7ff; }

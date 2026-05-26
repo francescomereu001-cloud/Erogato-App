@@ -1287,6 +1287,14 @@ useEffect(() => {
     return fromMetrics;
   }, [filteredRows, currentYear, productMonthlyMetrics]);
   const commissionMonthlyByProductSeries = useMemo(() => commissionsByProductSeries(filteredRows, currentYear), [filteredRows, currentYear]);
+  const productMonthlyTotals = useMemo(() => productMonthlySeries.reduce((acc, row) => ({
+    auto: acc.auto + row.AUTO,
+    pos: acc.pos + row.POS,
+  }), { auto: 0, pos: 0 }), [productMonthlySeries]);
+  const commissionMonthlyByProductTotals = useMemo(() => commissionMonthlyByProductSeries.reduce((acc, row) => ({
+    auto: acc.auto + row.AUTO,
+    pos: acc.pos + row.POS,
+  }), { auto: 0, pos: 0 }), [commissionMonthlyByProductSeries]);
 
   const kpis = useMemo(() => {
     const erogato = filteredRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
@@ -2037,6 +2045,12 @@ useEffect(() => {
                         <td className="right">{euro(row.AUTO + row.POS)}</td>
                       </tr>
                     ))}
+                    <tr className="table-total-row">
+                      <td>Totale</td>
+                      <td className="right">{euro(productMonthlyTotals.auto)}</td>
+                      <td className="right">{euro(productMonthlyTotals.pos)}</td>
+                      <td className="right">{euro(productMonthlyTotals.auto + productMonthlyTotals.pos)}</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2056,6 +2070,12 @@ useEffect(() => {
                         <td className="right">{euro(row.AUTO + row.POS)}</td>
                       </tr>
                     ))}
+                    <tr className="table-total-row">
+                      <td>Totale</td>
+                      <td className="right">{euro(commissionMonthlyByProductTotals.auto)}</td>
+                      <td className="right">{euro(commissionMonthlyByProductTotals.pos)}</td>
+                      <td className="right">{euro(commissionMonthlyByProductTotals.auto + commissionMonthlyByProductTotals.pos)}</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>

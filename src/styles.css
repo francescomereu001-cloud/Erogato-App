@@ -1,8 +1,8 @@
 :root {
   color-scheme: light;
-  --bg: #eef3fb;
-  --bg-accent: radial-gradient(circle at 10% 10%, rgba(91, 131, 255, 0.18), transparent 42%), radial-gradient(circle at 88% 4%, rgba(0, 194, 255, 0.12), transparent 38%), linear-gradient(180deg, #f7faff 0%, #edf2fb 100%);
-  --card: rgba(255, 255, 255, 0.86);
+  --bg: #dbeafe;
+  --bg-accent: radial-gradient(circle at 12% 12%, rgba(104, 146, 233, 0.22), transparent 42%), radial-gradient(circle at 86% 2%, rgba(126, 162, 235, 0.18), transparent 36%), linear-gradient(180deg, #dfeaf9 0%, #d1e0f4 100%);
+  --card: #ffffff;
   --line: #d9e4f3;
   --line-strong: #c7d7ef;
   --text: #162032;
@@ -13,7 +13,7 @@
   --success: #18804b;
   --danger-soft: #fff1f1;
   --danger: #cb3a3a;
-  --shadow: 0 14px 36px rgba(17, 24, 39, 0.09);
+  --shadow: 0 18px 38px rgba(17, 24, 39, 0.12);
 }
 
 * { box-sizing: border-box; }
@@ -56,7 +56,7 @@ button, input, select { font: inherit; }
   border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 24px;
   backdrop-filter: blur(8px);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.64), rgba(255, 255, 255, 0.44));
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.93), rgba(255, 255, 255, 0.84));
 }
 .hero h1 { margin: 0 0 8px; font-size: clamp(1.7rem, 4vw, 2.3rem); line-height: 1.08; }
 .hero p { margin: 0; color: var(--muted); max-width: 760px; }
@@ -91,8 +91,8 @@ button, input, select { font: inherit; }
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
 }
-.banner-card.info { background: linear-gradient(180deg, #ffffffcc 0%, #f1f7ffcc 100%); }
-.banner-card.success { background: linear-gradient(180deg, #ffffffcc 0%, #f0fff5cc 100%); }
+.banner-card.info { background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%); }
+.banner-card.success { background: linear-gradient(180deg, #ffffff 0%, #f4fff8 100%); }
 .banner-title { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .banner-value { font-size: clamp(1.4rem, 3vw, 1.85rem); font-weight: 700; margin-bottom: 4px; }
 .banner-text { font-size: 13px; color: var(--muted); }
@@ -177,7 +177,7 @@ button, input, select { font: inherit; }
   margin: 0 0 18px;
   padding: 10px;
   border-radius: 16px;
-  background: rgba(245, 249, 255, 0.84);
+  background: rgba(245, 249, 255, 0.95);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.75);
 }
@@ -237,6 +237,7 @@ tr:last-child td { border-bottom: none; }
 .mini-card { padding: 16px; }
 .mini-label { font-size: 13px; color: var(--muted); }
 .mini-value { font-size: 24px; font-weight: 700; margin-top: 8px; }
+.mini-note { margin-top: 8px; font-size: 12px; color: var(--muted); }
 
 .progress { width: 100%; height: 12px; border-radius: 999px; background: #ecf1f8; overflow: hidden; margin-bottom: 12px; }
 .progress-bar { height: 100%; background: linear-gradient(90deg, var(--primary), #5a84ff); }

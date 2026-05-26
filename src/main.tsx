@@ -14,6 +14,7 @@ import {
   LineChart,
   Line,
   Legend,
+  Cell,
 } from 'recharts';
 import {
   Upload,
@@ -48,6 +49,8 @@ import {
 import './styles.css';
 import { supabase } from "./supabase";
 type SourceRow = Record<string, unknown>;
+
+const PRODUCT_COLORS = ['#2458E6', '#14B8A6', '#F59E0B', '#8B5CF6', '#0EA5E9', '#EC4899', '#22C55E', '#F97316'];
 
 type AppRow = {
   rowId: string;
@@ -279,6 +282,21 @@ function workedDaysInMonth(year: number, monthIndex: number, referenceDate = new
     cursor.setDate(cursor.getDate() + 1);
   }
   return count;
+}
+
+function dateAtWorkingDayIndex(year: number, monthIndex: number, workingDayIndex: number) {
+  if (workingDayIndex <= 0) return null;
+  const cursor = new Date(year, monthIndex, 1);
+  let count = 0;
+  while (cursor.getMonth() === monthIndex) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      count += 1;
+      if (count === workingDayIndex) return new Date(cursor);
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return null;
 }
 
 function buildDailyProgressComparison(rows: AppRow[], year: number, month: number) {
@@ -1611,6 +1629,28 @@ useEffect(() => {
   const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
   const previousYearSameMonth = monthSeriesFromRows(rows, currentYear - 1)[currentMonthIndex - 1];
   const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : 0;
+  const previousMonthDate = new Date(currentYear, currentMonthIndex - 2, 1);
+  const previousMonthYear = previousMonthDate.getFullYear();
+  const previousMonthIndex = previousMonthDate.getMonth() + 1;
+  const nowReference = new Date();
+  const currentMonthWorkedDays = currentYear === nowReference.getFullYear() && currentMonthIndex === (nowReference.getMonth() + 1)
+    ? workedDaysInMonth(currentYear, currentMonthIndex - 1, nowReference)
+    : workingDaysInMonth(currentYear, currentMonthIndex - 1);
+  const previousMonthCutoffDate = dateAtWorkingDayIndex(previousMonthYear, previousMonthIndex - 1, currentMonthWorkedDays);
+  const currentMonthYtdErogato = filteredRowsAllYears.reduce((sum, row) => {
+    if (row.year !== currentYear || row.month !== currentMonthIndex || !row.dateISO) return sum;
+    const day = new Date(row.dateISO);
+    if (day.getDay() === 0 || day.getDay() === 6) return sum;
+    if (currentYear === nowReference.getFullYear() && currentMonthIndex === (nowReference.getMonth() + 1) && day > nowReference) return sum;
+    return sum + row.importoFinanziato;
+  }, 0);
+  const previousMonthComparableErogato = filteredRowsAllYears.reduce((sum, row) => {
+    if (row.year !== previousMonthYear || row.month !== previousMonthIndex || !row.dateISO || !previousMonthCutoffDate) return sum;
+    const day = new Date(row.dateISO);
+    if (day.getDay() === 0 || day.getDay() === 6 || day > previousMonthCutoffDate) return sum;
+    return sum + row.importoFinanziato;
+  }, 0);
+  const monthVsPrevMonth = previousMonthComparableErogato > 0 ? (currentMonthYtdErogato / previousMonthComparableErogato) - 1 : 0;
   const topFiveDealers = smartDealerTable.slice(0, 5);
   const alertsBySeverity = useMemo(() => ({
     alta: dealerAlerts.filter((a) => a.severity === 'alta'),
@@ -1782,7 +1822,7 @@ useEffect(() => {
               </div>
               <div className="panel">
                 <div className="panel-header"><h3>Mix prodotto</h3><span>Ripartizione per prodotto</span></div>
-                <div className="chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={mix} dataKey="value" nameKey="name" outerRadius={90} label /><Tooltip formatter={(value: number) => euro(value)} /></PieChart></ResponsiveContainer></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={mix} dataKey="value" nameKey="name" outerRadius={92} innerRadius={40} paddingAngle={2} labelLine={false} label={({ percent }) => percent && percent >= 0.08 ? `${(percent * 100).toFixed(0)}%` : ""}>{mix.map((entry, index) => <Cell key={`mix-${entry.name}`} fill={PRODUCT_COLORS[index % PRODUCT_COLORS.length]} />)}</Pie><Tooltip formatter={(value: number) => euro(value)} /><Legend verticalAlign="bottom" height={44} wrapperStyle={{ fontSize: "12px", color: "#5c6f8f" }} /></PieChart></ResponsiveContainer></div>
               </div>
             </div>
 
@@ -2090,7 +2130,7 @@ useEffect(() => {
             <div className="mini-grid four">
               <div className="mini-card"><div className="mini-label">Focus mese</div><div className="mini-value">{MONTHS_IT[referenceMonth - 1]}</div></div>
               <div className="mini-card"><div className="mini-label">Erogato mese</div><div className="mini-value">{euro0(currentMonthCard?.erogato || 0)}</div></div>
-              <div className="mini-card"><div className="mini-label">Vs anno precedente</div><div className="mini-value">{pct(monthVsPrevYear)}</div></div>
+              <div className="mini-card"><div className="mini-label">Vs mese precedente (YTD)</div><div className="mini-value">{pct(monthVsPrevMonth)}</div><div className="mini-note">Vs anno precedente: {pct(monthVsPrevYear)}</div></div>
               <div className="mini-card"><div className="mini-label">Dealer top 5</div><div className="mini-value">{num(topFiveDealers.length)}</div></div>
             </div>
             <div className="panel">

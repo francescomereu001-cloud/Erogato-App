@@ -386,3 +386,19 @@ tr:last-child td { border-bottom: none; }
 .dealer-breakdown-list strong {
   color: var(--text);
 }
+.branch-dealer-table { min-width: 1180px; }
+.dealer-leader-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 260px;
+}
+.dealer-leader-title { margin-bottom: 2px; }
+.dealer-leader-main {
+  font-weight: 700;
+  color: var(--text);
+}
+.dealer-leader-meta,
+.dealer-leader-empty {
+  color: var(--muted);
+  font-size: 12px;
+}

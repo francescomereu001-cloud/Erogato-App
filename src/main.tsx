@@ -1200,55 +1200,88 @@ useEffect(() => {
     provvigioni: branchFilteredRows.reduce((sum, row) => sum + row.provvigione, 0),
     polizze: branchFilteredRows.reduce((sum, row) => sum + row.polizza, 0),
   }), [branchFilteredRows]);
+  const branchDealerPeriodRows = useMemo(() => filteredRows.filter((row) => branchMonthFilter === 'ALL' || row.month === Number(branchMonthFilter)), [filteredRows, branchMonthFilter]);
+  const branchDealerPeriodLabel = useMemo(() => {
+    return branchMonthFilter === 'ALL' ? `Tutti i mesi ${currentYear}` : `${MONTHS_IT[Number(branchMonthFilter) - 1]} ${currentYear}`;
+  }, [branchMonthFilter, currentYear]);
   const branchDealerLeaders = useMemo(() => {
-    const groups = new Map<string, {
-      branch: string;
-      family: Exclude<BranchMacroFilter, 'ALL'>;
+    type DealerLeader = { dealer: string; erogato: number; pratiche: number; provvigioni: number; polizze: number; ticketMedio: number };
+    type DealerLeaderSegment = {
+      label: string;
       totalErogato: number;
       totalPratiche: number;
-      dealers: Map<string, { dealer: string; erogato: number; pratiche: number; provvigioni: number; polizze: number }>;
-    }>();
-
-    branchFilteredRows.forEach((row) => {
-      const family = getProductFamilyFromCode(row.prodottoCode);
-      if (family === 'ALTRO') return;
-      const branch = row.subagente || 'N/D';
+      dealers: Map<string, Omit<DealerLeader, 'ticketMedio'>>;
+      topDealer: DealerLeader | null;
+      topDealerPeso: number;
+      topDealers: DealerLeader[];
+    };
+    type BranchDealerLeader = {
+      branch: string;
+      globale: DealerLeaderSegment;
+      auto: DealerLeaderSegment;
+      pos: DealerLeaderSegment;
+    };
+    const createSegment = (label: string): DealerLeaderSegment => ({
+      label,
+      totalErogato: 0,
+      totalPratiche: 0,
+      dealers: new Map(),
+      topDealer: null,
+      topDealerPeso: 0,
+      topDealers: [],
+    });
+    const groups = new Map<string, BranchDealerLeader>();
+    const addToSegment = (segment: DealerLeaderSegment, row: AppRow) => {
       const dealer = row.dealer || 'N/D';
-      const key = `${branch}|${family}`;
-      if (!groups.has(key)) {
-        groups.set(key, { branch, family, totalErogato: 0, totalPratiche: 0, dealers: new Map() });
-      }
-      const group = groups.get(key)!;
-      group.totalErogato += row.importoFinanziato;
-      group.totalPratiche += 1;
-      if (!group.dealers.has(dealer)) group.dealers.set(dealer, { dealer, erogato: 0, pratiche: 0, provvigioni: 0, polizze: 0 });
-      const item = group.dealers.get(dealer)!;
+      segment.totalErogato += row.importoFinanziato;
+      segment.totalPratiche += 1;
+      if (!segment.dealers.has(dealer)) segment.dealers.set(dealer, { dealer, erogato: 0, pratiche: 0, provvigioni: 0, polizze: 0 });
+      const item = segment.dealers.get(dealer)!;
       item.erogato += row.importoFinanziato;
       item.pratiche += 1;
       item.provvigioni += row.provvigione;
       item.polizze += row.polizza;
+    };
+
+    branchDealerPeriodRows.forEach((row) => {
+      const family = getProductFamilyFromCode(row.prodottoCode);
+      if (family === 'ALTRO') return;
+      const branch = row.subagente || 'N/D';
+      if (!groups.has(branch)) {
+        groups.set(branch, {
+          branch,
+          globale: createSegment('Globale'),
+          auto: createSegment('Erogato AUTO'),
+          pos: createSegment('POS'),
+        });
+      }
+      const group = groups.get(branch)!;
+      addToSegment(group.globale, row);
+      addToSegment(family === 'AUTO' ? group.auto : group.pos, row);
     });
 
+    const finalizeSegment = (segment: DealerLeaderSegment) => {
+      const topDealers = Array.from(segment.dealers.values())
+        .map((dealer) => ({ ...dealer, ticketMedio: dealer.pratiche ? dealer.erogato / dealer.pratiche : 0 }))
+        .sort((a, b) => b.erogato - a.erogato);
+      const topDealer = topDealers[0] || null;
+      return {
+        ...segment,
+        topDealer,
+        topDealerPeso: topDealer && segment.totalErogato > 0 ? topDealer.erogato / segment.totalErogato : 0,
+        topDealers: topDealers.slice(0, 3),
+      };
+    };
+
     return Array.from(groups.values())
-      .map((group) => {
-        const dealers = Array.from(group.dealers.values())
-          .map((dealer) => ({ ...dealer, ticketMedio: dealer.pratiche ? dealer.erogato / dealer.pratiche : 0 }))
-          .sort((a, b) => b.erogato - a.erogato);
-        const topDealer = dealers[0] || null;
-        return {
-          key: `${group.branch}|${group.family}`,
-          branch: group.branch,
-          family: group.family,
-          macroLabel: group.family === 'AUTO' ? 'Erogato AUTO' : 'POS',
-          totalErogato: group.totalErogato,
-          totalPratiche: group.totalPratiche,
-          topDealer,
-          topDealerPeso: topDealer && group.totalErogato > 0 ? topDealer.erogato / group.totalErogato : 0,
-          topDealers: dealers.slice(0, 3),
-        };
-      })
-      .sort((a, b) => b.totalErogato - a.totalErogato || a.branch.localeCompare(b.branch) || a.family.localeCompare(b.family));
-  }, [branchFilteredRows]);
+      .map((group) => ({
+        branch: group.branch,
+        globale: finalizeSegment(group.globale),
+        auto: finalizeSegment(group.auto),
+        pos: finalizeSegment(group.pos),
+      }))
+      .sort((a, b) => b.globale.totalErogato - a.globale.totalErogato || a.branch.localeCompare(b.branch));
+  }, [branchDealerPeriodRows]);
   const subagenteRanking = useMemo(() => aggregateByField(branchFilteredRows, currentYear, 'subagente').slice(0, 12), [branchFilteredRows, currentYear]);
   const subagenteTable = useMemo(() => aggregateByField(branchFilteredRows, currentYear, 'subagente'), [branchFilteredRows, currentYear]);
   const mix = useMemo(() => productMix(filteredRows, currentYear), [filteredRows, currentYear]);
@@ -2388,29 +2421,37 @@ useEffect(() => {
               </div>
             </div>
             <div className="panel">
-              <div className="panel-header"><h3>Top dealer per filiale</h3><span>Classifica dealer dentro ogni filiale e macroprodotto · {branchFilterSummary}</span></div>
+              <div className="panel-header"><h3>Top dealer per filiale</h3><span>Top globali, AUTO e POS per filiale · {branchDealerPeriodLabel}</span></div>
               <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Filiale</th><th>Macroprodotto</th><th>Top dealer</th><th className="right">Erogato top</th><th className="right">Peso su filiale/macro</th><th className="right">Pratiche</th><th>Top 3 dealer</th></tr></thead>
+                <table className="branch-dealer-table">
+                  <thead><tr><th>Filiale</th><th>Top globale</th><th>Top AUTO</th><th>Top POS</th></tr></thead>
                   <tbody>
                     {branchDealerLeaders.map((row) => (
-                      <tr key={row.key}>
+                      <tr key={row.branch}>
                         <td>{row.branch}</td>
-                        <td><span className="badge">{row.macroLabel}</span></td>
-                        <td>{row.topDealer?.dealer || '-'}</td>
-                        <td className="right">{euro(row.topDealer?.erogato || 0)}</td>
-                        <td className="right">{pct(row.topDealerPeso)}</td>
-                        <td className="right">{num(row.topDealer?.pratiche || 0)} / {num(row.totalPratiche)}</td>
-                        <td>
-                          <div className="dealer-breakdown-list">
-                            {row.topDealers.map((dealer, index) => (
-                              <div key={`${row.key}-${dealer.dealer}`}><strong>#{index + 1} {dealer.dealer}</strong> · {euro0(dealer.erogato)} · {num(dealer.pratiche)} pratiche · ticket {euro0(dealer.ticketMedio)}</div>
-                            ))}
-                          </div>
-                        </td>
+                        {[row.globale, row.auto, row.pos].map((segment) => (
+                          <td key={`${row.branch}-${segment.label}`}>
+                            <div className="dealer-leader-cell">
+                              <div className="dealer-leader-title"><span className="badge">{segment.label}</span></div>
+                              {segment.topDealer ? (
+                                <>
+                                  <div className="dealer-leader-main">{segment.topDealer.dealer}</div>
+                                  <div className="dealer-leader-meta">{euro0(segment.topDealer.erogato)} · peso {pct(segment.topDealerPeso)} · {num(segment.topDealer.pratiche)} / {num(segment.totalPratiche)} pratiche</div>
+                                  <div className="dealer-breakdown-list">
+                                    {segment.topDealers.map((dealer, index) => (
+                                      <div key={`${row.branch}-${segment.label}-${dealer.dealer}`}><strong>#{index + 1} {dealer.dealer}</strong> · {euro0(dealer.erogato)} · ticket {euro0(dealer.ticketMedio)}</div>
+                                    ))}
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="dealer-leader-empty">Nessun dato</div>
+                              )}
+                            </div>
+                          </td>
+                        ))}
                       </tr>
                     ))}
-                    {!branchDealerLeaders.length && <tr><td colSpan={7}>Nessun dealer disponibile per i filtri selezionati.</td></tr>}
+                    {!branchDealerLeaders.length && <tr><td colSpan={4}>Nessun dealer disponibile per il periodo selezionato.</td></tr>}
                   </tbody>
                 </table>
               </div>

@@ -349,3 +349,30 @@ tr:last-child td { border-bottom: none; }
 }
 
 .table-total-row td { font-weight: 700; background: #f8fbff; border-top: 2px solid #dbe7ff; }
+
+.branch-filters-grid {
+  grid-template-columns: minmax(180px, 0.9fr) minmax(180px, 0.9fr) repeat(3, minmax(180px, 1fr));
+  align-items: stretch;
+}
+.branch-filter-card {
+  box-shadow: none;
+  background: #f4f8ff;
+  border-color: #dde8f7;
+  padding: 12px 14px;
+}
+.branch-filter-card .mini-value {
+  font-size: 18px;
+}
+.empty-state {
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  color: var(--muted);
+  background: #f8fbff;
+}
+@media (max-width: 1100px) {
+  .branch-filters-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+}
+@media (max-width: 640px) {
+  .branch-filters-grid { grid-template-columns: 1fr; }
+}

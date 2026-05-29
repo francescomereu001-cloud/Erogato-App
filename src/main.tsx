@@ -47,6 +47,8 @@ import {
   X,
 } from 'lucide-react';
 import './styles.css';
+import { diffPct, euro, euro0, num, pct } from './utils/formatters';
+import { cleanNumber, getProductFamilyFromCode, normalizeMonthLabel, normalizeProductLabel, normalizeText, safeUpper } from './utils/normalizers';
 import { supabase } from "./supabase";
 type SourceRow = Record<string, unknown>;
 
@@ -190,42 +192,6 @@ const DEFAULT_SETTINGS: Settings = {
 const AUTH_USERNAME = import.meta.env.VITE_APP_USERNAME;
 const AUTH_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
 
-function euro(n: number) {
-  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2, useGrouping: 'always' }).format(Number(n || 0));
-}
-function euro0(n: number) {
-  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0, useGrouping: 'always' }).format(Number(n || 0));
-}
-function num(n: number, digits = 0) {
-  return new Intl.NumberFormat('it-IT', { maximumFractionDigits: digits, minimumFractionDigits: digits, useGrouping: 'always' }).format(Number(n || 0));
-}
-function pct(n: number) {
-  return `${num(Number(n || 0) * 100, 1)}%`;
-}
-function diffPct(current: number, previous: number) {
-  if (!Number.isFinite(previous) || previous === 0) return null;
-  return (current - previous) / previous;
-}
-function safeUpper(v: unknown) {
-  return String(v ?? '').trim().toUpperCase();
-}
-function normalizeText(v: unknown) {
-  return String(v ?? '').trim();
-}
-function normalizeMonthLabel(value: unknown) {
-  return String(value ?? '').trim().toLowerCase().replace('.', '');
-}
-function cleanNumber(value: unknown) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  if (typeof value === 'string') {
-    const cleaned = value.trim();
-    if (!cleaned) return 0;
-    const normalized = cleaned.replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
-    const parsed = Number(normalized);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  return 0;
-}
 function pick(row: SourceRow, keys: string[], fallback = '') {
   for (const key of keys) {
     const value = row[key];
@@ -258,20 +224,6 @@ function excelDateToDate(value: unknown): Date | null {
   }
   return null;
 }
-function normalizeProductLabel(code: string) {
-  if (code === '31') return 'Prodotto 31';
-  if (code === '21') return 'Prodotto 21';
-  if (code === '24') return 'Prodotto 24';
-  return code ? `Prodotto ${code}` : 'N/D';
-}
-function getProductFamilyFromCode(code: string): 'AUTO' | 'POS' | 'ALTRO' {
-  // Regola operativa utente:
-  // AUTO = 20, 21, 23, 36
-  // POS = tutto il resto
-  if (['20', '21', '23', '36'].includes(code)) return 'AUTO';
-  return code ? 'POS' : 'ALTRO';
-}
-
 function getMacroProduct(row: AppRow): 'AUTO' | 'POS' {
   return getProductFamilyFromCode(String(row.prodottoCode || '')) === 'AUTO' ? 'AUTO' : 'POS';
 }

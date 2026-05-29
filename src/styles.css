@@ -376,3 +376,13 @@ tr:last-child td { border-bottom: none; }
 @media (max-width: 640px) {
   .branch-filters-grid { grid-template-columns: 1fr; }
 }
+.dealer-breakdown-list {
+  display: grid;
+  gap: 4px;
+  min-width: 280px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.dealer-breakdown-list strong {
+  color: var(--text);
+}

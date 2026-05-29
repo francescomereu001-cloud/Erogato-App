@@ -379,6 +379,114 @@ function buildBranchMacroMixTable(rows: AppRow[], filters: TrendFilters) {
   }).sort((a, b) => b.totale - a.totale);
 }
 
+
+type TrendCauseDealerRow = {
+  dealer: string;
+  currentErogato: number;
+  previousErogato: number;
+  deltaEuro: number;
+  deltaPct: number | null;
+  currentPratiche: number;
+  previousPratiche: number;
+  filialePrevalente: string;
+  macroPrevalente: 'AUTO' | 'POS' | 'MISTO';
+  status: 'Nuovo' | 'Perso' | null;
+};
+
+type TrendCauseBranchRow = {
+  filiale: string;
+  currentErogato: number;
+  previousErogato: number;
+  deltaEuro: number;
+  deltaPct: number | null;
+  mainPositiveDealer: string;
+  mainNegativeDealer: string;
+};
+
+function buildTrendVariationCauses(rows: AppRow[], filters: TrendFilters) {
+  const trendRows = filterRowsForTrend(rows, filters);
+  const dealerMap = new Map<string, {
+    dealer: string;
+    currentRows: AppRow[];
+    previousRows: AppRow[];
+    branchAmounts: Map<string, number>;
+    macroAmounts: Map<'AUTO' | 'POS', number>;
+  }>();
+  const branchMap = new Map<string, { filiale: string; currentRows: AppRow[]; previousRows: AppRow[] }>();
+
+  trendRows.forEach((row) => {
+    const dealer = (row.dealer || '').trim() || 'N/D';
+    const filiale = (row.subagente || '').trim() || 'N/D';
+    const macro = getMacroProduct(row);
+    if (!dealerMap.has(dealer)) {
+      dealerMap.set(dealer, { dealer, currentRows: [], previousRows: [], branchAmounts: new Map(), macroAmounts: new Map() });
+    }
+    const dealerBucket = dealerMap.get(dealer)!;
+    if (row.year === filters.year) dealerBucket.currentRows.push(row);
+    if (row.year === filters.year - 1) dealerBucket.previousRows.push(row);
+    dealerBucket.branchAmounts.set(filiale, (dealerBucket.branchAmounts.get(filiale) || 0) + row.importoFinanziato);
+    dealerBucket.macroAmounts.set(macro, (dealerBucket.macroAmounts.get(macro) || 0) + row.importoFinanziato);
+
+    if (!branchMap.has(filiale)) branchMap.set(filiale, { filiale, currentRows: [], previousRows: [] });
+    const branchBucket = branchMap.get(filiale)!;
+    if (row.year === filters.year) branchBucket.currentRows.push(row);
+    if (row.year === filters.year - 1) branchBucket.previousRows.push(row);
+  });
+
+  const dealerRows: TrendCauseDealerRow[] = Array.from(dealerMap.values()).map((item) => {
+    const current = summarizeTrendRows(item.currentRows);
+    const previous = summarizeTrendRows(item.previousRows);
+    const deltaEuro = current.erogato - previous.erogato;
+    const branchAmounts = Array.from(item.branchAmounts.entries()).sort((a, b) => b[1] - a[1]);
+    const auto = item.macroAmounts.get('AUTO') || 0;
+    const pos = item.macroAmounts.get('POS') || 0;
+    const macroPrevalente: TrendCauseDealerRow['macroPrevalente'] = auto > 0 && pos > 0 ? 'MISTO' : (auto >= pos ? 'AUTO' : 'POS');
+    return {
+      dealer: item.dealer,
+      currentErogato: current.erogato,
+      previousErogato: previous.erogato,
+      deltaEuro,
+      deltaPct: diffPct(current.erogato, previous.erogato),
+      currentPratiche: current.pratiche,
+      previousPratiche: previous.pratiche,
+      filialePrevalente: branchAmounts[0]?.[0] || 'N/D',
+      macroPrevalente,
+      status: previous.erogato === 0 && current.erogato > 0 ? 'Nuovo' : (previous.erogato > 0 && current.erogato === 0 ? 'Perso' : null),
+    };
+  });
+
+  const positiveDealers = dealerRows.filter((row) => row.deltaEuro > 0).sort((a, b) => b.deltaEuro - a.deltaEuro).slice(0, 5);
+  const negativeDealers = dealerRows.filter((row) => row.deltaEuro < 0).sort((a, b) => a.deltaEuro - b.deltaEuro).slice(0, 5);
+
+  const branchRows: TrendCauseBranchRow[] = Array.from(branchMap.values()).map((item) => {
+    const current = summarizeTrendRows(item.currentRows);
+    const previous = summarizeTrendRows(item.previousRows);
+    const deltaEuro = current.erogato - previous.erogato;
+    const branchDealerRows = dealerRows.filter((dealer) => dealer.filialePrevalente === item.filiale);
+    const mainPositive = branchDealerRows.filter((dealer) => dealer.deltaEuro > 0).sort((a, b) => b.deltaEuro - a.deltaEuro)[0];
+    const mainNegative = branchDealerRows.filter((dealer) => dealer.deltaEuro < 0).sort((a, b) => a.deltaEuro - b.deltaEuro)[0];
+    return {
+      filiale: item.filiale,
+      currentErogato: current.erogato,
+      previousErogato: previous.erogato,
+      deltaEuro,
+      deltaPct: diffPct(current.erogato, previous.erogato),
+      mainPositiveDealer: mainPositive ? mainPositive.dealer : '-',
+      mainNegativeDealer: mainNegative ? mainNegative.dealer : '-',
+    };
+  }).sort((a, b) => Math.abs(b.deltaEuro) - Math.abs(a.deltaEuro));
+
+  const currentTotal = dealerRows.reduce((sum, row) => sum + row.currentErogato, 0);
+  const previousTotal = dealerRows.reduce((sum, row) => sum + row.previousErogato, 0);
+
+  return {
+    positiveDealers,
+    negativeDealers,
+    branchRows,
+    hasSufficientData: currentTotal > 0 && previousTotal > 0,
+  };
+}
+
 function buildTrendAlerts(rows: AppRow[], filters: TrendFilters, branchRows: ReturnType<typeof buildBranchTrendTable>) {
   const alerts: Array<{ key: string; severity: AlertSeverity; title: string; text: string }> = [];
   const strongDecline = branchRows.find((row) => row.deltaPct !== null && row.deltaPct <= -0.25 && row.previousErogato > 0);
@@ -1315,9 +1423,25 @@ useEffect(() => {
   const trendMonthlySeries = useMemo(() => buildMonthlyYoYSeries(rows, trendFilters), [rows, trendFilters]);
   const trendBranchTable = useMemo(() => buildBranchTrendTable(rows, trendFilters), [rows, trendFilters]);
   const trendMacroMixTable = useMemo(() => buildBranchMacroMixTable(rows, trendFilters), [rows, trendFilters]);
+  const trendVariationCauses = useMemo(() => buildTrendVariationCauses(rows, trendFilters), [rows, trendFilters]);
   const trendAlerts = useMemo(() => buildTrendAlerts(rows, trendFilters, trendBranchTable), [rows, trendFilters, trendBranchTable]);
   const trendPeriodLabel = trendPeriodMode === 'ytd' ? `YTD fino a ${MONTHS_IT[trendMonthLimit - 1]}` : `Solo ${MONTHS_IT[trendMonthLimit - 1]}`;
   const formatTrendPct = (value: number | null) => value === null ? 'n.d.' : pct(value);
+
+  const renderTrendCauseDealer = (row: TrendCauseDealerRow) => (
+    <div className="list-item" key={`trend-cause-dealer-${row.dealer}`}>
+      <div>
+        <div className="list-title">{row.dealer}</div>
+        <div className="list-subtitle">{row.filialePrevalente} · {euro0(row.currentErogato)} vs {euro0(row.previousErogato)} · pratiche {num(row.currentPratiche)} vs {num(row.previousPratiche)}</div>
+        <div className="trend-cause-meta">
+          <span className="badge">{row.macroPrevalente}</span>
+          {row.status ? <span className="badge">{row.status}</span> : null}
+          <span className="muted">Delta %: {formatTrendPct(row.deltaPct)}</span>
+        </div>
+      </div>
+      <div className="list-value">{euro0(row.deltaEuro)}</div>
+    </div>
+  );
 
   const currentYear = Number(yearFilter);
   const yearRows = useMemo(() => rows.filter((row) => row.year === currentYear), [rows, currentYear]);
@@ -2359,6 +2483,54 @@ useEffect(() => {
                 </div>
               </section>
             </div>
+
+            <section className="panel">
+              <div className="panel-header"><h3>Cause della variazione</h3><span>Dealer e filiali che spiegano crescita o calo rispetto all’anno precedente</span></div>
+              {!trendVariationCauses.hasSufficientData ? (
+                <div className="muted">Dati insufficienti per il confronto</div>
+              ) : (
+                <div className="stack">
+                  <div className="mini-grid trend-causes-grid">
+                    <div className="mini-card">
+                      <div className="panel-header"><h3>Top contributori positivi</h3><span>Primi 5 dealer per delta €</span></div>
+                      <div className="list-stack">
+                        {trendVariationCauses.positiveDealers.map(renderTrendCauseDealer)}
+                        {!trendVariationCauses.positiveDealers.length && <div className="muted">Nessun contributore positivo nel periodo selezionato.</div>}
+                      </div>
+                    </div>
+                    <div className="mini-card">
+                      <div className="panel-header"><h3>Top contributori negativi</h3><span>Primi 5 dealer per calo €</span></div>
+                      <div className="list-stack">
+                        {trendVariationCauses.negativeDealers.map(renderTrendCauseDealer)}
+                        {!trendVariationCauses.negativeDealers.length && <div className="muted">Nessun contributore negativo nel periodo selezionato.</div>}
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="panel-header"><h3>Sintesi per filiale</h3><span>Delta commerciale e dealer che incidono di più</span></div>
+                    <div className="table-wrap">
+                      <table>
+                        <thead><tr><th>Filiale</th><th className="right">Erogato corrente</th><th className="right">Erogato anno precedente</th><th className="right">Delta €</th><th className="right">Delta %</th><th>Principale dealer positivo</th><th>Principale dealer negativo</th></tr></thead>
+                        <tbody>
+                          {trendVariationCauses.branchRows.map((row) => (
+                            <tr key={`trend-cause-branch-${row.filiale}`}>
+                              <td>{row.filiale}</td>
+                              <td className="right">{euro(row.currentErogato)}</td>
+                              <td className="right">{euro(row.previousErogato)}</td>
+                              <td className="right">{euro(row.deltaEuro)}</td>
+                              <td className="right">{row.deltaPct === null ? <span className="badge">n.d.</span> : formatTrendPct(row.deltaPct)}</td>
+                              <td>{row.mainPositiveDealer}</td>
+                              <td>{row.mainNegativeDealer}</td>
+                            </tr>
+                          ))}
+                          {!trendVariationCauses.branchRows.length && <tr><td colSpan={7}>Dati insufficienti per il confronto</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
 
             <section className="panel">
               <div className="panel-header"><h3>Ranking filiali YTD</h3><span>Delta % n.d. quando il precedente è zero; le filiali nuove sono evidenziate</span></div>

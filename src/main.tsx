@@ -116,6 +116,17 @@ type ViewGranularity = 'monthly' | 'weekly' | 'daily';
 type DataSourceMode = 'supabase' | 'local' | 'empty';
 type DealerSortKey = 'erogato' | 'crescitaPct' | 'ticketMedio' | 'provvigioni';
 type BranchMacroFilter = 'ALL' | 'AUTO' | 'POS';
+type TrendPeriodMode = 'ytd' | 'month';
+type TrendMacroFilter = 'ALL' | 'AUTO' | 'POS';
+type TrendStatus = 'In crescita' | 'In calo' | 'Stabile' | 'Nuova';
+type TrendFilters = {
+  year: number;
+  monthLimit: number;
+  periodMode: TrendPeriodMode;
+  macroProduct: TrendMacroFilter;
+  branch: string;
+  dealer: string;
+};
 type DealerDetailInsight = { key: string; label: string; positive: boolean };
 
 type SmartDealerRow = {
@@ -259,6 +270,138 @@ function getProductFamilyFromCode(code: string): 'AUTO' | 'POS' | 'ALTRO' {
   // POS = tutto il resto
   if (['20', '21', '23', '36'].includes(code)) return 'AUTO';
   return code ? 'POS' : 'ALTRO';
+}
+
+function getMacroProduct(row: AppRow): 'AUTO' | 'POS' {
+  return getProductFamilyFromCode(String(row.prodottoCode || '')) === 'AUTO' ? 'AUTO' : 'POS';
+}
+
+function filterRowsForTrend(rows: AppRow[], filters: TrendFilters) {
+  return rows.filter((row) => {
+    if (!row.dateISO || !row.year || !row.month) return false;
+    if (row.year !== filters.year && row.year !== filters.year - 1) return false;
+    if (filters.periodMode === 'month' && row.month !== filters.monthLimit) return false;
+    if (filters.periodMode === 'ytd' && (row.month < 1 || row.month > filters.monthLimit)) return false;
+    if (filters.macroProduct !== 'ALL' && getMacroProduct(row) !== filters.macroProduct) return false;
+    if (filters.branch !== 'ALL' && row.subagente !== filters.branch) return false;
+    if (filters.dealer !== 'ALL' && row.dealer !== filters.dealer) return false;
+    return true;
+  });
+}
+
+function summarizeTrendRows(rows: AppRow[]) {
+  const erogato = rows.reduce((sum, row) => sum + row.importoFinanziato, 0);
+  const pratiche = rows.length;
+  const provvigioni = rows.reduce((sum, row) => sum + row.provvigione, 0);
+  return { erogato, pratiche, provvigioni, ticketMedio: pratiche ? erogato / pratiche : 0 };
+}
+
+function buildYtdTrendComparison(rows: AppRow[], filters: TrendFilters) {
+  const trendRows = filterRowsForTrend(rows, filters);
+  const currentRows = trendRows.filter((row) => row.year === filters.year);
+  const previousRows = trendRows.filter((row) => row.year === filters.year - 1);
+  const current = summarizeTrendRows(currentRows);
+  const previous = summarizeTrendRows(previousRows);
+  return {
+    current,
+    previous,
+    deltaEuro: current.erogato - previous.erogato,
+    deltaPct: diffPct(current.erogato, previous.erogato),
+    previousHasData: previous.pratiche > 0 || previous.erogato > 0,
+  };
+}
+
+function buildMonthlyYoYSeries(rows: AppRow[], filters: TrendFilters) {
+  const baseFilters = { ...filters, periodMode: 'ytd' as TrendPeriodMode };
+  const trendRows = filterRowsForTrend(rows, baseFilters);
+  return Array.from({ length: filters.monthLimit }, (_, index) => {
+    const month = index + 1;
+    const current = trendRows
+      .filter((row) => row.year === filters.year && row.month === month)
+      .reduce((sum, row) => sum + row.importoFinanziato, 0);
+    const previous = trendRows
+      .filter((row) => row.year === filters.year - 1 && row.month === month)
+      .reduce((sum, row) => sum + row.importoFinanziato, 0);
+    return { month, monthShort: MONTHS_SHORT[index], [String(filters.year)]: current, [String(filters.year - 1)]: previous };
+  });
+}
+
+function buildBranchTrendTable(rows: AppRow[], filters: TrendFilters) {
+  const trendRows = filterRowsForTrend(rows, filters);
+  const map = new Map<string, { filiale: string; currentRows: AppRow[]; previousRows: AppRow[] }>();
+  trendRows.forEach((row) => {
+    const filiale = (row.subagente || '').trim() || 'N/D';
+    if (!map.has(filiale)) map.set(filiale, { filiale, currentRows: [], previousRows: [] });
+    const bucket = map.get(filiale)!;
+    if (row.year === filters.year) bucket.currentRows.push(row);
+    if (row.year === filters.year - 1) bucket.previousRows.push(row);
+  });
+
+  return Array.from(map.values()).map((item) => {
+    const current = summarizeTrendRows(item.currentRows);
+    const previous = summarizeTrendRows(item.previousRows);
+    const deltaEuro = current.erogato - previous.erogato;
+    const deltaPct = diffPct(current.erogato, previous.erogato);
+    let stato: TrendStatus = 'Stabile';
+    if (previous.erogato === 0 && current.erogato > 0) stato = 'Nuova';
+    else if (deltaPct !== null && deltaPct > 0.05) stato = 'In crescita';
+    else if (deltaPct !== null && deltaPct < -0.05) stato = 'In calo';
+    return {
+      filiale: item.filiale,
+      currentErogato: current.erogato,
+      previousErogato: previous.erogato,
+      deltaEuro,
+      deltaPct,
+      pratiche: current.pratiche,
+      ticketMedio: current.ticketMedio,
+      provvigioni: current.provvigioni,
+      stato,
+      previousHasData: previous.pratiche > 0 || previous.erogato > 0,
+      currentTicketMedio: current.ticketMedio,
+      previousTicketMedio: previous.ticketMedio,
+    };
+  }).sort((a, b) => b.currentErogato - a.currentErogato);
+}
+
+function buildBranchMacroMixTable(rows: AppRow[], filters: TrendFilters) {
+  const currentRows = filterRowsForTrend(rows, { ...filters, macroProduct: 'ALL' }).filter((row) => row.year === filters.year);
+  const map = new Map<string, { filiale: string; auto: number; pos: number }>();
+  currentRows.forEach((row) => {
+    const filiale = (row.subagente || '').trim() || 'N/D';
+    if (!map.has(filiale)) map.set(filiale, { filiale, auto: 0, pos: 0 });
+    const bucket = map.get(filiale)!;
+    if (getMacroProduct(row) === 'AUTO') bucket.auto += row.importoFinanziato;
+    else bucket.pos += row.importoFinanziato;
+  });
+  return Array.from(map.values()).map((row) => {
+    const totale = row.auto + row.pos;
+    return { ...row, totale, autoPct: totale ? row.auto / totale : 0, posPct: totale ? row.pos / totale : 0 };
+  }).sort((a, b) => b.totale - a.totale);
+}
+
+function buildTrendAlerts(rows: AppRow[], filters: TrendFilters, branchRows: ReturnType<typeof buildBranchTrendTable>) {
+  const alerts: Array<{ key: string; severity: AlertSeverity; title: string; text: string }> = [];
+  const strongDecline = branchRows.find((row) => row.deltaPct !== null && row.deltaPct <= -0.25 && row.previousErogato > 0);
+  if (strongDecline) alerts.push({ key: 'branch-decline', severity: 'alta', title: 'Filiale in forte calo YoY', text: `${strongDecline.filiale}: ${euro0(strongDecline.deltaEuro)} (${pct(strongDecline.deltaPct || 0)})` });
+  const strongGrowth = branchRows.find((row) => row.deltaPct !== null && row.deltaPct >= 0.25 && row.previousErogato > 0);
+  if (strongGrowth) alerts.push({ key: 'branch-growth', severity: 'positiva', title: 'Filiale in forte crescita YoY', text: `${strongGrowth.filiale}: +${euro0(Math.abs(strongGrowth.deltaEuro))} (${pct(strongGrowth.deltaPct || 0)})` });
+  const newBranch = branchRows.find((row) => row.stato === 'Nuova');
+  if (newBranch) alerts.push({ key: 'new-branch', severity: 'media', title: 'Nuova filiale', text: `${newBranch.filiale}: nessun dato nello stesso periodo anno precedente.` });
+  const ticketDown = branchRows.find((row) => row.previousTicketMedio > 0 && row.currentTicketMedio < row.previousTicketMedio * 0.9);
+  if (ticketDown) alerts.push({ key: 'ticket-down', severity: 'bassa', title: 'Ticket medio in calo', text: `${ticketDown.filiale}: ${euro0(ticketDown.currentTicketMedio)} vs ${euro0(ticketDown.previousTicketMedio)} anno precedente.` });
+
+  const macroDelta = (macro: TrendMacroFilter) => {
+    if (macro === 'ALL') return null;
+    const scoped = filterRowsForTrend(rows, { ...filters, macroProduct: macro });
+    const current = scoped.filter((row) => row.year === filters.year).reduce((sum, row) => sum + row.importoFinanziato, 0);
+    const previous = scoped.filter((row) => row.year === filters.year - 1).reduce((sum, row) => sum + row.importoFinanziato, 0);
+    return { macro, current, previous, deltaPct: diffPct(current, previous) };
+  };
+  const macroWeak = [macroDelta('AUTO'), macroDelta('POS')]
+    .filter((item): item is NonNullable<typeof item> => Boolean(item && item.previous > 0 && item.deltaPct !== null))
+    .sort((a, b) => (a.deltaPct || 0) - (b.deltaPct || 0))[0];
+  if (macroWeak && (macroWeak.deltaPct || 0) < 0) alerts.push({ key: 'weak-macro', severity: 'media', title: 'Macroprodotto più debole YoY', text: `${macroWeak.macro}: ${pct(macroWeak.deltaPct || 0)} rispetto allo stesso periodo.` });
+  return alerts.slice(0, 5);
 }
 function workingDaysInMonth(year: number, monthIndex: number) {
   const date = new Date(year, monthIndex, 1);
@@ -965,7 +1108,7 @@ function App() {
   const [policyMonthlyMetrics, setPolicyMonthlyMetrics] = useState<PolicyMonthlyMetric[]>([]);
   const [importedFiles, setImportedFiles] = useState<string[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [tab, setTab] = useState<'executive' | 'focus' | 'forecast' | 'intelligence' | 'alerts' | 'products' | 'subagenti' | 'portfolio' | 'data'>('executive');
+  const [tab, setTab] = useState<'executive' | 'trend' | 'focus' | 'forecast' | 'intelligence' | 'alerts' | 'products' | 'subagenti' | 'portfolio' | 'data'>('executive');
   const [search, setSearch] = useState('');
   const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
   const [dealerFilter, setDealerFilter] = useState('ALL');
@@ -984,9 +1127,16 @@ function App() {
   const [branchMonthFilter, setBranchMonthFilter] = useState('ALL');
   const [branchMacroFilter, setBranchMacroFilter] = useState<BranchMacroFilter>('ALL');
   const [dealerWeightView, setDealerWeightView] = useState<'totale' | 'auto' | 'pos'>('totale');
+  const [trendYear, setTrendYear] = useState(Number(new Date().getFullYear()));
+  const [trendMonthLimit, setTrendMonthLimit] = useState(new Date().getMonth() + 1);
+  const [trendPeriodMode, setTrendPeriodMode] = useState<TrendPeriodMode>('ytd');
+  const [trendMacroProduct, setTrendMacroProduct] = useState<TrendMacroFilter>('ALL');
+  const [trendBranch, setTrendBranch] = useState('ALL');
+  const [trendDealer, setTrendDealer] = useState('ALL');
 
   const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
     ['executive', 'Executive', Home],
+    ['trend', 'Andamento', TrendingUp],
     ['focus', 'Focus', CalendarDays],
     ['intelligence', 'Dealer', BriefcaseBusiness],
     ['alerts', 'Alert', Siren],
@@ -1008,6 +1158,12 @@ function App() {
     setViewGranularity('monthly');
     setBranchMonthFilter('ALL');
     setBranchMacroFilter('ALL');
+    setTrendYear(new Date().getFullYear());
+    setTrendMonthLimit(new Date().getMonth() + 1);
+    setTrendPeriodMode('ytd');
+    setTrendMacroProduct('ALL');
+    setTrendBranch('ALL');
+    setTrendDealer('ALL');
   };
 
 useEffect(() => {
@@ -1140,6 +1296,28 @@ useEffect(() => {
   useEffect(() => {
     if (!availableYears.includes(Number(yearFilter))) setYearFilter(String(availableYears[availableYears.length - 1]));
   }, [availableYears, yearFilter]);
+
+  useEffect(() => {
+    if (!availableYears.includes(trendYear)) setTrendYear(availableYears[availableYears.length - 1]);
+  }, [availableYears, trendYear]);
+
+  const trendBranches = useMemo(() => ['ALL', ...Array.from(new Set(rows.map((row) => row.subagente).filter(Boolean))).sort()], [rows]);
+  const trendDealers = useMemo(() => ['ALL', ...Array.from(new Set(rows.map((row) => row.dealer).filter(Boolean))).sort()], [rows]);
+  const trendFilters = useMemo<TrendFilters>(() => ({
+    year: trendYear,
+    monthLimit: trendMonthLimit,
+    periodMode: trendPeriodMode,
+    macroProduct: trendMacroProduct,
+    branch: trendBranch,
+    dealer: trendDealer,
+  }), [trendYear, trendMonthLimit, trendPeriodMode, trendMacroProduct, trendBranch, trendDealer]);
+  const trendComparison = useMemo(() => buildYtdTrendComparison(rows, trendFilters), [rows, trendFilters]);
+  const trendMonthlySeries = useMemo(() => buildMonthlyYoYSeries(rows, trendFilters), [rows, trendFilters]);
+  const trendBranchTable = useMemo(() => buildBranchTrendTable(rows, trendFilters), [rows, trendFilters]);
+  const trendMacroMixTable = useMemo(() => buildBranchMacroMixTable(rows, trendFilters), [rows, trendFilters]);
+  const trendAlerts = useMemo(() => buildTrendAlerts(rows, trendFilters, trendBranchTable), [rows, trendFilters, trendBranchTable]);
+  const trendPeriodLabel = trendPeriodMode === 'ytd' ? `YTD fino a ${MONTHS_IT[trendMonthLimit - 1]}` : `Solo ${MONTHS_IT[trendMonthLimit - 1]}`;
+  const formatTrendPct = (value: number | null) => value === null ? 'n.d.' : pct(value);
 
   const currentYear = Number(yearFilter);
   const yearRows = useMemo(() => rows.filter((row) => row.year === currentYear), [rows, currentYear]);
@@ -1913,6 +2091,7 @@ useEffect(() => {
 
   const sectionTitles: Record<typeof tab, string> = {
     executive: 'Executive Dashboard',
+    trend: 'Andamento',
     focus: 'Focus Mese',
     intelligence: 'Dealer Intelligence',
     alerts: 'Alert Center',
@@ -2130,6 +2309,94 @@ useEffect(() => {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {tab === 'trend' && (
+          <div className="stack">
+            <section className="panel">
+              <div className="panel-header">
+                <h3>Filtri Andamento</h3>
+                <span>Analisi da DATA_LIQUIDAZIONE / dateISO sulle righe normalizzate del database</span>
+              </div>
+              <div className="filters-grid trend-filters-grid">
+                <select className="select" value={trendYear} onChange={(e) => setTrendYear(Number(e.target.value))}>{availableYears.map((year) => <option key={`trend-year-${year}`} value={year}>{year}</option>)}</select>
+                <select className="select" value={trendMonthLimit} onChange={(e) => setTrendMonthLimit(Number(e.target.value))}>{MONTHS_IT.map((month, index) => <option key={month} value={index + 1}>{month}</option>)}</select>
+                <select className="select" value={trendPeriodMode} onChange={(e) => setTrendPeriodMode(e.target.value as TrendPeriodMode)}>
+                  <option value="ytd">YTD fino al mese selezionato</option>
+                  <option value="month">Solo mese selezionato</option>
+                </select>
+                <select className="select" value={trendMacroProduct} onChange={(e) => setTrendMacroProduct(e.target.value as TrendMacroFilter)}>
+                  <option value="ALL">Tutti i macroprodotti</option>
+                  <option value="AUTO">AUTO</option>
+                  <option value="POS">POS</option>
+                </select>
+                <select className="select" value={trendBranch} onChange={(e) => setTrendBranch(e.target.value)}>{trendBranches.map((branch) => <option key={`trend-branch-${branch}`} value={branch}>{branch === 'ALL' ? 'Tutte le filiali' : branch}</option>)}</select>
+                <select className="select" value={trendDealer} onChange={(e) => setTrendDealer(e.target.value)}>{trendDealers.map((dealer) => <option key={`trend-dealer-${dealer}`} value={dealer}>{dealer === 'ALL' ? 'Tutti i dealer' : dealer}</option>)}</select>
+              </div>
+              <div className="muted trend-filter-note">Periodo: <strong>{trendPeriodLabel}</strong> · Confronto {trendYear} vs {trendYear - 1}</div>
+            </section>
+
+            <section className="dashboard-grid">
+              <KPI title="Erogato periodo corrente" value={euro0(trendComparison.current.erogato)} subtitle={`${trendPeriodLabel} ${trendYear}`} icon={Euro} className="kpi-card--highlight" />
+              <KPI title="Erogato anno precedente" value={euro0(trendComparison.previous.erogato)} subtitle={trendComparison.previousHasData ? `${trendYear - 1}` : 'Nessun dato anno precedente'} icon={CalendarDays} />
+              <KPI title="Delta euro" value={euro0(trendComparison.deltaEuro)} subtitle={trendComparison.deltaEuro >= 0 ? 'Variazione positiva' : 'Variazione negativa'} icon={TrendingUp} />
+              <KPI title="Delta percentuale" value={formatTrendPct(trendComparison.deltaPct)} subtitle={trendComparison.deltaPct === null ? 'n.d. con precedente zero' : 'YoY'} icon={Target} />
+              <KPI title="Pratiche" value={num(trendComparison.current.pratiche)} subtitle="Periodo corrente" icon={Users} />
+              <KPI title="Ticket medio" value={euro0(trendComparison.current.ticketMedio)} subtitle={`Provvigioni ${euro0(trendComparison.current.provvigioni)}`} icon={Wallet} />
+            </section>
+
+            <div className="panel-grid two-one">
+              <section className="panel">
+                <div className="panel-header"><h3>Andamento mensile anno su anno</h3><span>Da gennaio a {MONTHS_IT[trendMonthLimit - 1]} · rispetta filiale, dealer e macroprodotto</span></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={trendMonthlySeries}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="monthShort" /><YAxis /><Tooltip formatter={(value: number) => euro(value)} /><Legend /><Line type="monotone" dataKey={String(trendYear - 1)} stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} /><Line type="monotone" dataKey={String(trendYear)} stroke="#0ea5e9" strokeWidth={3} dot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
+              </section>
+              <section className="panel">
+                <div className="panel-header"><h3>Alert andamento</h3><span>Massimo 5 insight automatici</span></div>
+                <div className="list-stack">
+                  {trendAlerts.map((alert) => <div className={`list-item alert-card ${alert.severity}`} key={alert.key}><div><div className="list-title">{alert.title}</div><div className="list-subtitle">{alert.text}</div></div><span className="badge">{alert.severity}</span></div>)}
+                  {!trendAlerts.length && <div className="muted">Nessun alert rilevante nel periodo selezionato.</div>}
+                </div>
+              </section>
+            </div>
+
+            <section className="panel">
+              <div className="panel-header"><h3>Ranking filiali YTD</h3><span>Delta % n.d. quando il precedente è zero; le filiali nuove sono evidenziate</span></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Filiale</th><th className="right">Erogato periodo corrente</th><th className="right">Erogato periodo anno precedente</th><th className="right">Delta €</th><th className="right">Delta %</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Provvigioni</th><th>Stato</th></tr></thead>
+                  <tbody>
+                    {trendBranchTable.map((row) => (
+                      <tr key={`trend-branch-${row.filiale}`}>
+                        <td>{row.filiale}</td>
+                        <td className="right">{euro(row.currentErogato)}</td>
+                        <td className="right">{euro(row.previousErogato)}</td>
+                        <td className="right">{euro(row.deltaEuro)}</td>
+                        <td className="right">{row.deltaPct === null ? <span className="badge">n.d.</span> : formatTrendPct(row.deltaPct)}</td>
+                        <td className="right">{num(row.pratiche)}</td>
+                        <td className="right">{euro(row.ticketMedio)}</td>
+                        <td className="right">{euro(row.provvigioni)}</td>
+                        <td><span className="badge">{row.stato === 'Nuova' ? 'Nuova filiale' : row.stato}</span>{!row.previousHasData && row.stato !== 'Nuova' ? <div className="muted">Nessun dato anno precedente</div> : null}</td>
+                      </tr>
+                    ))}
+                    {!trendBranchTable.length && <tr><td colSpan={9}>Nessuna filiale disponibile nel periodo selezionato.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-header"><h3>Mix macroprodotto per filiale</h3><span>AUTO = prodotti 20, 21, 23, 36 · POS = tutto il resto</span></div>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Filiale</th><th className="right">Erogato AUTO</th><th className="right">Peso AUTO %</th><th className="right">Erogato POS</th><th className="right">Peso POS %</th><th className="right">Totale</th></tr></thead>
+                  <tbody>
+                    {trendMacroMixTable.map((row) => <tr key={`trend-mix-${row.filiale}`}><td>{row.filiale}</td><td className="right">{euro(row.auto)}</td><td className="right">{pct(row.autoPct)}</td><td className="right">{euro(row.pos)}</td><td className="right">{pct(row.posPct)}</td><td className="right">{euro(row.totale)}</td></tr>)}
+                    {!trendMacroMixTable.length && <tr><td colSpan={6}>Nessun dato macroprodotto disponibile nel periodo selezionato.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           </div>
         )}
 

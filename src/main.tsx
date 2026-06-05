@@ -463,26 +463,65 @@ function buildTrendAlerts(rows: AppRow[], filters: TrendFilters, branchRows: Ret
   if (macroWeak && (macroWeak.deltaPct || 0) < 0) alerts.push({ key: 'weak-macro', severity: 'media', title: 'Macroprodotto più debole YoY', text: `${macroWeak.macro}: ${pct(macroWeak.deltaPct || 0)} rispetto allo stesso periodo.` });
   return alerts.slice(0, 5);
 }
+function toISODate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function easterSunday(year: number) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31) - 1;
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month, day, 12, 0, 0, 0);
+}
+
+function getItalianBankHolidays(year: number): Set<string> {
+  const fixedDays = ['01-01', '01-06', '04-25', '05-01', '06-02', '08-15', '11-01', '12-08', '12-25', '12-26'];
+  const holidays = new Set(fixedDays.map((day) => `${year}-${day}`));
+  const easterMonday = easterSunday(year);
+  easterMonday.setDate(easterMonday.getDate() + 1);
+  holidays.add(toISODate(easterMonday));
+  return holidays;
+}
+
+function isBankWorkingDay(date: Date): boolean {
+  const day = date.getDay();
+  if (day === 0 || day === 6) return false;
+  return !getItalianBankHolidays(date.getFullYear()).has(toISODate(date));
+}
+
 function workingDaysInMonth(year: number, monthIndex: number) {
-  const date = new Date(year, monthIndex, 1);
+  const date = new Date(year, monthIndex, 1, 12, 0, 0, 0);
   let count = 0;
   while (date.getMonth() === monthIndex) {
-    const day = date.getDay();
-    if (day !== 0 && day !== 6) count += 1;
+    if (isBankWorkingDay(date)) count += 1;
     date.setDate(date.getDate() + 1);
   }
   return count;
 }
 function workedDaysInMonth(year: number, monthIndex: number, referenceDate = new Date()) {
-  const start = new Date(year, monthIndex, 1);
-  const end = new Date(year, monthIndex + 1, 0);
-  const ref = referenceDate < start ? null : referenceDate > end ? end : referenceDate;
+  const start = new Date(year, monthIndex, 1, 12, 0, 0, 0);
+  const end = new Date(year, monthIndex + 1, 0, 12, 0, 0, 0);
+  const normalizedReference = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate(), 12, 0, 0, 0);
+  const ref = normalizedReference < start ? null : normalizedReference > end ? end : normalizedReference;
   if (!ref) return 0;
   const cursor = new Date(start);
   let count = 0;
   while (cursor <= ref) {
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) count += 1;
+    if (isBankWorkingDay(cursor)) count += 1;
     cursor.setDate(cursor.getDate() + 1);
   }
   return count;
@@ -490,17 +529,211 @@ function workedDaysInMonth(year: number, monthIndex: number, referenceDate = new
 
 function dateAtWorkingDayIndex(year: number, monthIndex: number, workingDayIndex: number) {
   if (workingDayIndex <= 0) return null;
-  const cursor = new Date(year, monthIndex, 1);
+  const cursor = new Date(year, monthIndex, 1, 12, 0, 0, 0);
   let count = 0;
   while (cursor.getMonth() === monthIndex) {
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) {
+    if (isBankWorkingDay(cursor)) {
       count += 1;
       if (count === workingDayIndex) return new Date(cursor);
     }
     cursor.setDate(cursor.getDate() + 1);
   }
   return null;
+}
+
+function workingDayIndexInMonth(date: Date) {
+  if (!isBankWorkingDay(date)) return workedDaysInMonth(date.getFullYear(), date.getMonth(), date);
+  return workedDaysInMonth(date.getFullYear(), date.getMonth(), date);
+}
+
+function previousMonthYearMonth(year: number, month: number) {
+  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+}
+
+type WorkingDayBenchmarkOptions = {
+  year: number;
+  month: number;
+  macroProduct: TrendMacroFilter;
+  branch: string;
+  dealer: string;
+  periodMode: TrendPeriodMode;
+  referenceDate?: Date;
+};
+
+type WorkingDaySeriesPoint = {
+  workingDayIndex: number;
+  label: string;
+  dateISO: string | null;
+  corrente: number;
+  mesePrecedente: number;
+  annoScorso: number;
+  meseMiglioreYtd: number;
+  mediaAnnoCorrente: number;
+  praticheCorrente: number;
+  praticheMesePrecedente: number;
+  praticheAnnoScorso: number;
+};
+
+function filterRowsForWorkingDayBenchmark(rows: AppRow[], options: WorkingDayBenchmarkOptions) {
+  return rows.filter((row) => {
+    if (!row.dateISO || !row.year || !row.month) return false;
+    if (options.macroProduct !== 'ALL' && getMacroProduct(row) !== options.macroProduct) return false;
+    if (options.branch !== 'ALL' && row.subagente !== options.branch) return false;
+    if (options.dealer !== 'ALL' && row.dealer !== options.dealer) return false;
+    return true;
+  });
+}
+
+function buildMonthWorkingDayCumulative(rows: AppRow[], year: number, month: number) {
+  const daily = new Map<number, { amount: number; practices: number }>();
+  rows.forEach((row) => {
+    if (row.year !== year || row.month !== month || !row.dateISO) return;
+    const date = new Date(row.dateISO);
+    if (!isBankWorkingDay(date)) return;
+    const index = workingDayIndexInMonth(date);
+    const prev = daily.get(index) || { amount: 0, practices: 0 };
+    daily.set(index, { amount: prev.amount + row.importoFinanziato, practices: prev.practices + 1 });
+  });
+
+  const totalWorkingDays = workingDaysInMonth(year, month - 1);
+  const values: Array<{ amount: number; practices: number }> = [];
+  let cumulativeAmount = 0;
+  let cumulativePractices = 0;
+  for (let index = 1; index <= totalWorkingDays; index += 1) {
+    const item = daily.get(index);
+    cumulativeAmount += item?.amount || 0;
+    cumulativePractices += item?.practices || 0;
+    values[index] = { amount: cumulativeAmount, practices: cumulativePractices };
+  }
+  const lastDataIndex = Math.max(0, ...Array.from(daily.keys()));
+  return { values, totalWorkingDays, lastDataIndex };
+}
+
+function safeDeltaPct(current: number, benchmark: number) {
+  return benchmark > 0 ? (current - benchmark) / benchmark : null;
+}
+
+function buildWorkingDayBenchmarkComparison(rows: AppRow[], options: WorkingDayBenchmarkOptions) {
+  const scopedRows = filterRowsForWorkingDayBenchmark(rows, options);
+  const referenceDate = options.referenceDate || new Date();
+  const currentRealMonth = referenceDate.getFullYear() === options.year && referenceDate.getMonth() + 1 === options.month;
+  const selectedMonth = buildMonthWorkingDayCumulative(scopedRows, options.year, options.month);
+  const previousMonthRef = previousMonthYearMonth(options.year, options.month);
+  const previousMonth = buildMonthWorkingDayCumulative(scopedRows, previousMonthRef.year, previousMonthRef.month);
+  const previousYear = buildMonthWorkingDayCumulative(scopedRows, options.year - 1, options.month);
+  const selectedRows = scopedRows.filter((row) => row.year === options.year && row.month === options.month);
+  const latestSelectedDate = selectedRows
+    .map((row) => row.dateISO ? new Date(row.dateISO) : null)
+    .filter((date): date is Date => Boolean(date && !Number.isNaN(date.getTime())))
+    .sort((a, b) => b.getTime() - a.getTime())[0] || null;
+
+  const calendarCutoff = currentRealMonth
+    ? workedDaysInMonth(options.year, options.month - 1, referenceDate)
+    : selectedMonth.totalWorkingDays;
+  const dataCutoff = selectedMonth.lastDataIndex || (latestSelectedDate ? workedDaysInMonth(options.year, options.month - 1, latestSelectedDate) : 0);
+  const isPartial = currentRealMonth || (dataCutoff > 0 && dataCutoff < selectedMonth.totalWorkingDays);
+  const cutoffIndex = Math.max(1, Math.min(
+    selectedMonth.totalWorkingDays,
+    currentRealMonth && dataCutoff > 0 ? Math.min(calendarCutoff, dataCutoff) : (dataCutoff > 0 && dataCutoff < selectedMonth.totalWorkingDays ? dataCutoff : calendarCutoff),
+  ));
+
+  const ytdMonths = Array.from({ length: options.month }, (_, index) => index + 1);
+  const ytdMonthSeries = ytdMonths.map((month) => ({ month, cumulative: buildMonthWorkingDayCumulative(scopedRows, options.year, month) }));
+  const bestMonthYtd = ytdMonthSeries
+    .map(({ month, cumulative }) => ({ month, total: cumulative.values[cumulative.totalWorkingDays]?.amount || 0 }))
+    .sort((a, b) => b.total - a.total)[0]?.month || null;
+  const bestMonth = bestMonthYtd ? buildMonthWorkingDayCumulative(scopedRows, options.year, bestMonthYtd) : null;
+
+  const maxSeriesIndex = Math.max(
+    cutoffIndex,
+    previousMonth.lastDataIndex || 0,
+    previousYear.lastDataIndex || 0,
+    bestMonth?.lastDataIndex || 0,
+    selectedMonth.totalWorkingDays,
+  );
+  const safeValue = (series: ReturnType<typeof buildMonthWorkingDayCumulative> | null, index: number) => {
+    if (!series) return { amount: 0, practices: 0 };
+    const cappedIndex = Math.min(index, series.totalWorkingDays);
+    return series.values[cappedIndex] || { amount: 0, practices: 0 };
+  };
+
+  const series: WorkingDaySeriesPoint[] = Array.from({ length: maxSeriesIndex }, (_, index) => {
+    const workingDayIndex = index + 1;
+    const currentValue = safeValue(selectedMonth, workingDayIndex);
+    const previousMonthValue = safeValue(previousMonth, workingDayIndex);
+    const previousYearValue = safeValue(previousYear, workingDayIndex);
+    const bestMonthValue = safeValue(bestMonth, workingDayIndex);
+    const averageMonths = ytdMonthSeries.filter(({ cumulative }) => cumulative.totalWorkingDays >= workingDayIndex);
+    const mediaAnnoCorrente = averageMonths.length
+      ? averageMonths.reduce((sum, item) => sum + safeValue(item.cumulative, workingDayIndex).amount, 0) / averageMonths.length
+      : 0;
+    const date = dateAtWorkingDayIndex(options.year, options.month - 1, workingDayIndex);
+    return {
+      workingDayIndex,
+      label: `Giorno lav. ${workingDayIndex}`,
+      dateISO: date ? toISODate(date) : null,
+      corrente: currentValue.amount,
+      mesePrecedente: previousMonthValue.amount,
+      annoScorso: previousYearValue.amount,
+      meseMiglioreYtd: bestMonthValue.amount,
+      mediaAnnoCorrente,
+      praticheCorrente: currentValue.practices,
+      praticheMesePrecedente: previousMonthValue.practices,
+      praticheAnnoScorso: previousYearValue.practices,
+    };
+  }).slice(0, isPartial ? cutoffIndex : selectedMonth.totalWorkingDays);
+
+  const currentAtCutoff = safeValue(selectedMonth, cutoffIndex);
+  const previousMonthAtCutoff = safeValue(previousMonth, cutoffIndex);
+  const previousYearAtCutoff = safeValue(previousYear, cutoffIndex);
+  const bestAtCutoff = safeValue(bestMonth, cutoffIndex);
+  const averageAtCutoff = ytdMonthSeries.length
+    ? ytdMonthSeries.reduce((sum, item) => sum + safeValue(item.cumulative, cutoffIndex).amount, 0) / ytdMonthSeries.length
+    : 0;
+  const totalWorkingDays = selectedMonth.totalWorkingDays;
+  const dailyAverage = cutoffIndex > 0 ? currentAtCutoff.amount / cutoffIndex : 0;
+  const projection = dailyAverage * totalWorkingDays;
+
+  return {
+    series,
+    cutoffIndex,
+    cutoffDateISO: dateAtWorkingDayIndex(options.year, options.month - 1, cutoffIndex) ? toISODate(dateAtWorkingDayIndex(options.year, options.month - 1, cutoffIndex)!) : null,
+    latestDataDateISO: latestSelectedDate ? toISODate(latestSelectedDate) : null,
+    isPartial,
+    totalWorkingDays,
+    bestMonthYtd,
+    hasData: selectedRows.length > 0,
+    kpi: {
+      current: currentAtCutoff.amount,
+      currentPractices: currentAtCutoff.practices,
+      previousMonth: previousMonthAtCutoff.amount,
+      previousYear: previousYearAtCutoff.amount,
+      bestMonthYtd: bestAtCutoff.amount,
+      averageYear: averageAtCutoff,
+      deltaPreviousMonth: currentAtCutoff.amount - previousMonthAtCutoff.amount,
+      deltaPreviousMonthPct: safeDeltaPct(currentAtCutoff.amount, previousMonthAtCutoff.amount),
+      deltaPreviousYear: currentAtCutoff.amount - previousYearAtCutoff.amount,
+      deltaPreviousYearPct: safeDeltaPct(currentAtCutoff.amount, previousYearAtCutoff.amount),
+      deltaAverageYear: currentAtCutoff.amount - averageAtCutoff,
+      deltaBestMonthYtd: currentAtCutoff.amount - bestAtCutoff.amount,
+      projection,
+      dailyAverage,
+      noPreviousMonthData: previousMonthAtCutoff.amount <= 0 && previousMonthAtCutoff.practices <= 0,
+      noPreviousYearData: previousYearAtCutoff.amount <= 0 && previousYearAtCutoff.practices <= 0,
+    },
+  };
+}
+
+function buildDailyProgressComparison(rows: AppRow[], year: number, month: number) {
+  return buildWorkingDayBenchmarkComparison(rows, {
+    year,
+    month,
+    macroProduct: 'ALL',
+    branch: 'ALL',
+    dealer: 'ALL',
+    periodMode: 'month',
+    referenceDate: new Date(),
+  }).series;
 }
 
 type DealerCategory = 'AUTO' | 'POS';
@@ -557,48 +790,6 @@ function buildDealerPortfolioStats(rows: AppRow[]) {
   return { stats, totalErogato, totalAutoDealers, totalPosDealers };
 }
 
-function buildDailyProgressComparison(rows: AppRow[], year: number, month: number) {
-  const previousMonth = month === 1 ? 12 : month - 1;
-  const previousMonthYear = month === 1 ? year - 1 : year;
-  const previousYear = year - 1;
-  const maxDays = Math.max(
-    new Date(year, month, 0).getDate(),
-    new Date(previousMonthYear, previousMonth, 0).getDate(),
-    new Date(previousYear, month, 0).getDate(),
-  );
-
-  const buildDailyTotals = (targetYear: number, targetMonth: number) => {
-    const totals = new Map<number, number>();
-    rows.forEach((row) => {
-      if (row.year !== targetYear || row.month !== targetMonth || !row.dateISO) return;
-      const day = new Date(row.dateISO).getDate();
-      totals.set(day, (totals.get(day) || 0) + row.importoFinanziato);
-    });
-    return totals;
-  };
-
-  const currTotals = buildDailyTotals(year, month);
-  const prevMonthTotals = buildDailyTotals(previousMonthYear, previousMonth);
-  const prevYearTotals = buildDailyTotals(previousYear, month);
-
-  let currCumulative = 0;
-  let prevMonthCumulative = 0;
-  let prevYearCumulative = 0;
-
-  return Array.from({ length: maxDays }, (_, index) => {
-    const day = index + 1;
-    currCumulative += currTotals.get(day) || 0;
-    prevMonthCumulative += prevMonthTotals.get(day) || 0;
-    prevYearCumulative += prevYearTotals.get(day) || 0;
-    return {
-      day,
-      label: `${day}`,
-      corrente: currCumulative,
-      mesePrecedente: prevMonthCumulative,
-      annoScorso: prevYearCumulative,
-    };
-  });
-}
 
 function findBestMonthYtd(rows: AppRow[], year: number, upToMonth: number) {
   const totals = new Map<number, number>();
@@ -1748,66 +1939,36 @@ useEffect(() => {
     return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, last12Rows, sum, count, ticket };
   }, [selectedDealerDetail, filteredRowsAllYears, currentYear]);
   const dealerAlerts = useMemo(() => buildDealerAlerts(smartDealerTable), [smartDealerTable]);
-  const bestMonthYtd = useMemo(
-    () => findBestMonthYtd(filteredRowsAllYears, currentYear, referenceMonth),
-    [filteredRowsAllYears, currentYear, referenceMonth],
-  );
+  const trendWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(rows, {
+    year: trendYear,
+    month: trendMonthLimit,
+    macroProduct: trendMacroProduct,
+    branch: trendBranch,
+    dealer: trendDealer,
+    periodMode: trendPeriodMode,
+    referenceDate: new Date(),
+  }), [rows, trendYear, trendMonthLimit, trendMacroProduct, trendBranch, trendDealer, trendPeriodMode]);
 
-  const dailyProgressComparison = useMemo(() => {
-    const base = buildDailyProgressComparison(filteredRowsAllYears, currentYear, referenceMonth);
+  const executiveWorkingDaySummary = useMemo(() => buildWorkingDayBenchmarkComparison(filteredRowsAllYears, {
+    year: currentYear,
+    month: referenceMonth,
+    macroProduct: 'ALL',
+    branch: 'ALL',
+    dealer: 'ALL',
+    periodMode: 'month',
+    referenceDate: new Date(),
+  }), [filteredRowsAllYears, currentYear, referenceMonth]);
 
-    const ytdMonths = Array.from({ length: referenceMonth }, (_, index) => index + 1);
-    const cumulativeByMonth = new Map<number, number[]>();
+  const forecastWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(filteredRowsAllYears, {
+    year: currentYear,
+    month: new Date().getFullYear() === currentYear ? new Date().getMonth() + 1 : referenceMonth,
+    macroProduct: 'ALL',
+    branch: 'ALL',
+    dealer: 'ALL',
+    periodMode: 'month',
+    referenceDate: new Date(),
+  }), [filteredRowsAllYears, currentYear, referenceMonth]);
 
-    ytdMonths.forEach((month) => {
-      const monthRows = filteredRowsAllYears.filter(
-        (row) => row.year === currentYear && row.month === month && row.dateISO,
-      );
-      const dailyTotals = new Map<number, number>();
-
-      monthRows.forEach((row) => {
-        const day = new Date(row.dateISO!).getDate();
-        dailyTotals.set(day, (dailyTotals.get(day) || 0) + row.importoFinanziato);
-      });
-
-      let cumulative = 0;
-      const cumulativeSeries = base.map((row) => {
-        cumulative += dailyTotals.get(row.day) || 0;
-        return cumulative;
-      });
-
-      cumulativeByMonth.set(month, cumulativeSeries);
-    });
-
-    const withYearAverage = base.map((row, index) => {
-      const total = ytdMonths.reduce(
-        (sum, month) => sum + (cumulativeByMonth.get(month)?.[index] || 0),
-        0,
-      );
-      const mediaAnnoCorrente = ytdMonths.length ? total / ytdMonths.length : 0;
-      return { ...row, mediaAnnoCorrente };
-    });
-
-    if (!bestMonthYtd) {
-      return withYearAverage.map((row) => ({ ...row, meseMiglioreYtd: 0 }));
-    }
-
-    const bestMonthRows = filteredRowsAllYears.filter(
-      (row) => row.year === currentYear && row.month === bestMonthYtd && row.dateISO,
-    );
-
-    const bestDailyTotals = new Map<number, number>();
-    bestMonthRows.forEach((row) => {
-      const day = new Date(row.dateISO!).getDate();
-      bestDailyTotals.set(day, (bestDailyTotals.get(day) || 0) + row.importoFinanziato);
-    });
-
-    let bestCumulative = 0;
-    return withYearAverage.map((row) => {
-      bestCumulative += bestDailyTotals.get(row.day) || 0;
-      return { ...row, meseMiglioreYtd: bestCumulative };
-    });
-  }, [filteredRowsAllYears, currentYear, referenceMonth, bestMonthYtd]);
 
  async function handleFiles(fileList: FileList | null) {
   const files = Array.from(fileList || []);
@@ -2032,6 +2193,9 @@ useEffect(() => {
   }
 
   const progress = forecast.annualTarget ? Math.min((forecast.projectedAnnual / forecast.annualTarget) * 100, 100) : 0;
+  const trendComparableSubtitle = trendWorkingDayBenchmark.isPartial ? 'Confronto a pari giorno lavorativo' : 'Confronto su mese completo';
+  const trendDisplayDeltaEuro = trendPeriodMode === 'month' ? trendWorkingDayBenchmark.kpi.deltaPreviousYear : trendComparison.deltaEuro;
+  const trendDisplayDeltaPct = trendPeriodMode === 'month' ? trendWorkingDayBenchmark.kpi.deltaPreviousYearPct : trendComparison.deltaPct;
   const quarterlyProgress = useMemo(() => {
     const quarters = [
       { label: 'Q1', start: 0, end: 2 },
@@ -2055,28 +2219,14 @@ useEffect(() => {
   const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
   const previousYearSameMonth = monthSeriesFromRows(rows, currentYear - 1)[currentMonthIndex - 1];
   const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : 0;
-  const previousMonthDate = new Date(currentYear, currentMonthIndex - 2, 1);
-  const previousMonthYear = previousMonthDate.getFullYear();
-  const previousMonthIndex = previousMonthDate.getMonth() + 1;
-  const nowReference = new Date();
-  const currentMonthWorkedDays = currentYear === nowReference.getFullYear() && currentMonthIndex === (nowReference.getMonth() + 1)
-    ? workedDaysInMonth(currentYear, currentMonthIndex - 1, nowReference)
-    : workingDaysInMonth(currentYear, currentMonthIndex - 1);
-  const previousMonthCutoffDate = dateAtWorkingDayIndex(previousMonthYear, previousMonthIndex - 1, currentMonthWorkedDays);
-  const currentMonthYtdErogato = filteredRowsAllYears.reduce((sum, row) => {
-    if (row.year !== currentYear || row.month !== currentMonthIndex || !row.dateISO) return sum;
-    const day = new Date(row.dateISO);
-    if (day.getDay() === 0 || day.getDay() === 6) return sum;
-    if (currentYear === nowReference.getFullYear() && currentMonthIndex === (nowReference.getMonth() + 1) && day > nowReference) return sum;
-    return sum + row.importoFinanziato;
-  }, 0);
-  const previousMonthComparableErogato = filteredRowsAllYears.reduce((sum, row) => {
-    if (row.year !== previousMonthYear || row.month !== previousMonthIndex || !row.dateISO || !previousMonthCutoffDate) return sum;
-    const day = new Date(row.dateISO);
-    if (day.getDay() === 0 || day.getDay() === 6 || day > previousMonthCutoffDate) return sum;
-    return sum + row.importoFinanziato;
-  }, 0);
-  const monthVsPrevMonth = previousMonthComparableErogato > 0 ? (currentMonthYtdErogato / previousMonthComparableErogato) - 1 : 0;
+  const currentMonthWorkedDays = executiveWorkingDaySummary.cutoffIndex;
+  const currentMonthYtdErogato = executiveWorkingDaySummary.kpi.current;
+  const previousMonthComparableErogato = executiveWorkingDaySummary.kpi.previousMonth;
+  const monthVsPrevMonth = executiveWorkingDaySummary.kpi.deltaPreviousMonthPct || 0;
+  const executiveLatestDate = executiveWorkingDaySummary.latestDataDateISO || executiveWorkingDaySummary.cutoffDateISO;
+  const executiveDayRows = filteredRowsAllYears.filter((row) => row.dateISO && executiveLatestDate && toISODate(new Date(row.dateISO)) === executiveLatestDate);
+  const executiveDayErogato = executiveDayRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
+  const executiveDayPractices = executiveDayRows.length;
   const topFiveDealers = smartDealerTable.slice(0, 5);
   const alertsBySeverity = useMemo(() => ({
     alta: dealerAlerts.filter((a) => a.severity === 'alta'),
@@ -2350,45 +2500,26 @@ useEffect(() => {
             {viewGranularity === 'monthly' && (
               <div className="panel">
                 <div className="panel-header">
-                  <h3>Avanzamento giornaliero mese vs storico</h3>
-<span>{MONTHS_IT[referenceMonth - 1]} {currentYear} vs mese precedente, anno scorso, mese top YTD e media anno corrente</span>
+                  <h3>Situazione al giorno</h3>
+                  <span>Sintesi compatta a pari giorno lavorativo bancario</span>
                 </div>
-                <div className="chart">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={dailyProgressComparison}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="label" />
-                      <YAxis />
-                      <Tooltip formatter={(value: number) => euro(value)} />
-                      <Legend />
-                      <Line type="monotone" dataKey="corrente" name={`${currentYear}`} stroke="#0ea5e9" strokeWidth={3} dot={false} />
-                      <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" stroke="#f59e0b" strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="annoScorso" name={`${currentYear - 1}`} stroke="#8b5cf6" strokeWidth={2} dot={false} />
-<Line
-  type="monotone"
-  dataKey="meseMiglioreYtd"
-  name={bestMonthYtd ? `Mese top YTD (${MONTHS_IT[bestMonthYtd - 1]})` : 'Mese top YTD'}
-  stroke="#22c55e"
-  strokeWidth={2}
-  dot={false}
-/>
-<Line
-  type="monotone"
-  dataKey="mediaAnnoCorrente"
-  name="Media anno corrente"
-  stroke="#ef4444"
-  strokeWidth={2}
-  dot={false}
-/>
-                    </LineChart>
-                  </ResponsiveContainer>
+                <div className="mini-grid four">
+                  <div className="mini-card"><div className="mini-label">Ultimo aggiornamento dati</div><div className="mini-value">{executiveLatestDate ? new Date(executiveLatestDate).toLocaleDateString('it-IT') : '-'}</div></div>
+                  <div className="mini-card"><div className="mini-label">Giorno lavorativo bancario</div><div className="mini-value">{num(currentMonthWorkedDays)}</div></div>
+                  <div className="mini-card"><div className="mini-label">Erogato del giorno</div><div className="mini-value">{euro0(executiveDayErogato)}</div></div>
+                  <div className="mini-card"><div className="mini-label">Pratiche del giorno</div><div className="mini-value">{num(executiveDayPractices)}</div></div>
+                </div>
+                <div className="mini-grid three">
+                  <div className="mini-card"><div className="mini-label">Cumulato mese fino a oggi</div><div className="mini-value">{euro0(currentMonthYtdErogato)}</div></div>
+                  <div className="mini-card"><div className="mini-label">Vs mese precedente</div><div className="mini-value">{euro0(executiveWorkingDaySummary.kpi.deltaPreviousMonth)}</div><div className="mini-subtitle">{executiveWorkingDaySummary.kpi.deltaPreviousMonthPct === null ? 'n.d.' : pct(executiveWorkingDaySummary.kpi.deltaPreviousMonthPct)} a pari giorno lav.</div></div>
+                  <div className="mini-card"><div className="mini-label">Vs stesso mese anno prec.</div><div className="mini-value">{euro0(executiveWorkingDaySummary.kpi.deltaPreviousYear)}</div><div className="mini-subtitle">{executiveWorkingDaySummary.kpi.deltaPreviousYearPct === null ? 'n.d.' : pct(executiveWorkingDaySummary.kpi.deltaPreviousYearPct)} a pari giorno lav.</div></div>
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {tab === 'trend' && (
+        {tab === 'trend'  && (
           <div className="stack">
             <section className="panel">
               <div className="panel-header">
@@ -2413,11 +2544,56 @@ useEffect(() => {
               <div className="muted trend-filter-note">Periodo: <strong>{trendPeriodLabel}</strong> · Confronto {trendYear} vs {trendYear - 1}</div>
             </section>
 
+            <section className="panel">
+              <div className="panel-header">
+                <h3>Andamento giornaliero lavorativo</h3>
+                <span>{MONTHS_IT[trendMonthLimit - 1]} {trendYear} · cut-off al giorno lavorativo {trendWorkingDayBenchmark.cutoffIndex}</span>
+              </div>
+              <div className="muted trend-filter-note"><strong>I confronti sono calcolati a pari giorno lavorativo bancario, escludendo sabati, domeniche e festività nazionali.</strong></div>
+              {!trendWorkingDayBenchmark.hasData ? (
+                <div className="muted">Dati insufficienti per il confronto lavorativo.</div>
+              ) : (
+                <div className="stack">
+                  <div className="mini-grid four">
+                    <div className="mini-card"><div className="mini-label">Erogato al cut-off</div><div className="mini-value">{euro0(trendWorkingDayBenchmark.kpi.current)}</div></div>
+                    <div className="mini-card"><div className="mini-label">Giorno lavorativo raggiunto</div><div className="mini-value">{num(trendWorkingDayBenchmark.cutoffIndex)} / {num(trendWorkingDayBenchmark.totalWorkingDays)}</div></div>
+                    <div className="mini-card"><div className="mini-label">Delta € vs mese precedente</div><div className="mini-value">{euro0(trendWorkingDayBenchmark.kpi.deltaPreviousMonth)}</div><div className="mini-subtitle">{trendWorkingDayBenchmark.kpi.deltaPreviousMonthPct === null ? 'n.d.' : pct(trendWorkingDayBenchmark.kpi.deltaPreviousMonthPct)}</div></div>
+                    <div className="mini-card"><div className="mini-label">Delta € vs stesso mese A.P.</div><div className="mini-value">{euro0(trendWorkingDayBenchmark.kpi.deltaPreviousYear)}</div><div className="mini-subtitle">{trendWorkingDayBenchmark.kpi.deltaPreviousYearPct === null ? 'n.d.' : pct(trendWorkingDayBenchmark.kpi.deltaPreviousYearPct)}</div></div>
+                  </div>
+                  <div className="mini-grid four">
+                    <div className="mini-card"><div className="mini-label">Delta € vs media anno corrente</div><div className="mini-value">{euro0(trendWorkingDayBenchmark.kpi.deltaAverageYear)}</div></div>
+                    <div className="mini-card"><div className="mini-label">Delta € vs mese migliore YTD</div><div className="mini-value">{euro0(trendWorkingDayBenchmark.kpi.deltaBestMonthYtd)}</div><div className="mini-subtitle">{trendWorkingDayBenchmark.bestMonthYtd ? MONTHS_IT[trendWorkingDayBenchmark.bestMonthYtd - 1] : 'n.d.'}</div></div>
+                    <div className="mini-card"><div className="mini-label">Proiezione fine mese</div><div className="mini-value">{euro0(trendWorkingDayBenchmark.kpi.projection)}</div></div>
+                    <div className="mini-card"><div className="mini-label">Storico</div><div className="mini-value">{(trendWorkingDayBenchmark.kpi.noPreviousMonthData || trendWorkingDayBenchmark.kpi.noPreviousYearData) ? 'n.d.' : 'OK'}</div><div className="mini-subtitle">{(trendWorkingDayBenchmark.kpi.noPreviousMonthData || trendWorkingDayBenchmark.kpi.noPreviousYearData) ? 'Nessun dato storico' : 'Benchmark disponibili'}</div></div>
+                  </div>
+                  <div className="chart">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={trendWorkingDayBenchmark.series}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="label" />
+                        <YAxis />
+                        <Tooltip formatter={(value: number, name: string) => [euro(value), name]} labelFormatter={(_, payload) => {
+                          const row = payload?.[0]?.payload as WorkingDaySeriesPoint | undefined;
+                          return row ? `${row.label}${row.dateISO ? ` · ${new Date(row.dateISO).toLocaleDateString('it-IT')}` : ''}` : '';
+                        }} />
+                        <Legend />
+                        <Line type="monotone" dataKey="corrente" name="Mese selezionato" stroke="#0ea5e9" strokeWidth={3} dot={false} />
+                        <Line type="monotone" dataKey="mesePrecedente" name="Mese precedente" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="annoScorso" name="Stesso mese anno prec." stroke="#8b5cf6" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="meseMiglioreYtd" name="Mese migliore YTD" stroke="#22c55e" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="mediaAnnoCorrente" name="Media anno corrente" stroke="#ef4444" strokeWidth={2} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+            </section>
+
             <section className="dashboard-grid">
               <KPI title="Erogato periodo corrente" value={euro0(trendComparison.current.erogato)} subtitle={`${trendPeriodLabel} ${trendYear}`} icon={Euro} className="kpi-card--highlight" />
               <KPI title="Erogato anno precedente" value={euro0(trendComparison.previous.erogato)} subtitle={trendComparison.previousHasData ? `${trendYear - 1}` : 'Nessun dato anno precedente'} icon={CalendarDays} />
-              <KPI title="Delta euro" value={euro0(trendComparison.deltaEuro)} subtitle={trendComparison.deltaEuro >= 0 ? 'Variazione positiva' : 'Variazione negativa'} icon={TrendingUp} />
-              <KPI title="Delta percentuale" value={formatTrendPct(trendComparison.deltaPct)} subtitle={trendComparison.deltaPct === null ? 'n.d. con precedente zero' : 'YoY'} icon={Target} />
+              <KPI title="Delta euro" value={euro0(trendDisplayDeltaEuro)} subtitle={trendComparableSubtitle} icon={TrendingUp} />
+              <KPI title="Delta percentuale" value={formatTrendPct(trendDisplayDeltaPct)} subtitle={trendDisplayDeltaPct === null ? 'n.d. con precedente zero' : trendComparableSubtitle} icon={Target} />
               <KPI title="Pratiche" value={num(trendComparison.current.pratiche)} subtitle="Periodo corrente" icon={Users} />
               <KPI title="Ticket medio" value={euro0(trendComparison.current.ticketMedio)} subtitle={`Provvigioni ${euro0(trendComparison.current.provvigioni)}`} icon={Wallet} />
             </section>
@@ -2589,6 +2765,20 @@ useEffect(() => {
               <div className="mini-card"><div className="mini-label">YTD reale</div><div className="mini-value">{euro0(forecast.ytd)}</div></div>
               <div className="mini-card"><div className="mini-label">Proiezione fine anno</div><div className="mini-value">{euro0(forecast.projectedAnnual)}</div></div>
               <div className="mini-card"><div className="mini-label">Gap vs target</div><div className="mini-value">{euro0(forecast.gapToTarget)}</div></div>
+            </div>
+            <div className="panel">
+              <div className="panel-header"><h3>Ritmo mese corrente</h3><span>Forecast su giorni lavorativi bancari reali</span></div>
+              <div className="mini-grid four">
+                <div className="mini-card"><div className="mini-label">Erogato al cut-off</div><div className="mini-value">{euro0(forecastWorkingDayBenchmark.kpi.current)}</div></div>
+                <div className="mini-card"><div className="mini-label">Giorni lavorativi bancari</div><div className="mini-value">{num(forecastWorkingDayBenchmark.cutoffIndex)} / {num(forecastWorkingDayBenchmark.totalWorkingDays)}</div></div>
+                <div className="mini-card"><div className="mini-label">Media per giorno lavorativo</div><div className="mini-value">{euro0(forecastWorkingDayBenchmark.kpi.dailyAverage)}</div></div>
+                <div className="mini-card"><div className="mini-label">Proiezione fine mese</div><div className="mini-value">{euro0(forecastWorkingDayBenchmark.kpi.projection)}</div></div>
+              </div>
+              <div className="mini-grid three">
+                <div className="mini-card"><div className="mini-label">Gap vs media anno corrente</div><div className="mini-value">{euro0(forecastWorkingDayBenchmark.kpi.deltaAverageYear)}</div></div>
+                <div className="mini-card"><div className="mini-label">Gap vs mese precedente</div><div className="mini-value">{euro0(forecastWorkingDayBenchmark.kpi.deltaPreviousMonth)}</div><div className="mini-subtitle">A pari giorno lavorativo</div></div>
+                <div className="mini-card"><div className="mini-label">Gap vs stesso mese A.P.</div><div className="mini-value">{euro0(forecastWorkingDayBenchmark.kpi.deltaPreviousYear)}</div><div className="mini-subtitle">A pari giorno lavorativo</div></div>
+              </div>
             </div>
             <div className="panel">
               <div className="panel-header"><h3>Avanzamento target</h3><span>Copertura stimata del target annuale</span></div>

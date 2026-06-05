@@ -168,6 +168,7 @@ type DealerAlert = {
 };
 
 const STORAGE_KEY = 'dealer_erogato_app_v8b';
+const SETTINGS_STORAGE_KEY = `${STORAGE_KEY}_settings`;
 const MONTHS_IT = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
 const MONTHS_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
 const MONTH_MAP: Record<string, number> = {
@@ -191,6 +192,38 @@ const DEFAULT_SETTINGS: Settings = {
 };
 const AUTH_USERNAME = import.meta.env.VITE_APP_USERNAME;
 const AUTH_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
+
+function mergeSettings(settings?: Partial<Settings>): Settings {
+  return {
+    annualTargetByYear: {
+      ...DEFAULT_SETTINGS.annualTargetByYear,
+      ...(settings?.annualTargetByYear || {}),
+    },
+    stagionalitaByYear: {
+      ...DEFAULT_SETTINGS.stagionalitaByYear,
+      ...(settings?.stagionalitaByYear || {}),
+    },
+  };
+}
+
+function loadStoredSettings(): Settings {
+  if (typeof window === 'undefined') return DEFAULT_SETTINGS;
+
+  try {
+    const rawSettings = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (rawSettings) return mergeSettings(JSON.parse(rawSettings) as Partial<Settings>);
+
+    const rawArchive = window.localStorage.getItem(STORAGE_KEY);
+    if (rawArchive) {
+      const parsed = JSON.parse(rawArchive) as { settings?: Partial<Settings> };
+      return mergeSettings(parsed.settings);
+    }
+  } catch (error) {
+    console.error('Errore lettura impostazioni locali:', error);
+  }
+
+  return DEFAULT_SETTINGS;
+}
 
 function pick(row: SourceRow, keys: string[], fallback = '') {
   for (const key of keys) {
@@ -1358,7 +1391,7 @@ function App() {
   const [productMonthlyMetrics, setProductMonthlyMetrics] = useState<ProductMonthlyMetric[]>([]);
   const [policyMonthlyMetrics, setPolicyMonthlyMetrics] = useState<PolicyMonthlyMetric[]>([]);
   const [importedFiles, setImportedFiles] = useState<string[]>([]);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<Settings>(() => loadStoredSettings());
   const [tab, setTab] = useState<'executive' | 'trend' | 'focus' | 'forecast' | 'intelligence' | 'alerts' | 'products' | 'subagenti' | 'portfolio' | 'data'>('executive');
   const [search, setSearch] = useState('');
   const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
@@ -1522,7 +1555,7 @@ useEffect(() => {
       };
       setRows(parsed.rows || []);
       setImportedFiles(parsed.importedFiles || []);
-      setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
+      setSettings(mergeSettings(parsed.settings));
       setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
       setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
       setDataSourceMode((parsed.rows || []).length ? 'local' : 'empty');
@@ -1537,6 +1570,7 @@ useEffect(() => {
       
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }));
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   }, [rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics]);
 
   const availableYears = useMemo(() => {
@@ -2077,6 +2111,7 @@ useEffect(() => {
     setPolicyMonthlyMetrics([]);
     setSettings(DEFAULT_SETTINGS);
     window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
     setDataSourceMode('empty');
   }
 
@@ -2181,7 +2216,7 @@ useEffect(() => {
         };
         setRows(parsed.rows || []);
         setImportedFiles(parsed.importedFiles || []);
-        setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
+        setSettings(mergeSettings(parsed.settings));
         setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
         setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
         setDataSourceMode((parsed.rows || []).length ? 'local' : 'empty');

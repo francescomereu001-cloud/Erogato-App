@@ -646,29 +646,57 @@ function safeDeltaPct(current: number, benchmark: number) {
   return benchmark > 0 ? (current - benchmark) / benchmark : null;
 }
 
-function buildWorkingDayBenchmarkComparison(rows: AppRow[], options: WorkingDayBenchmarkOptions) {
-  const scopedRows = filterRowsForWorkingDayBenchmark(rows, options);
-  const referenceDate = options.referenceDate || new Date();
-  const currentRealMonth = referenceDate.getFullYear() === options.year && referenceDate.getMonth() + 1 === options.month;
-  const selectedMonth = buildMonthWorkingDayCumulative(scopedRows, options.year, options.month);
-  const previousMonthRef = previousMonthYearMonth(options.year, options.month);
-  const previousMonth = buildMonthWorkingDayCumulative(scopedRows, previousMonthRef.year, previousMonthRef.month);
-  const previousYear = buildMonthWorkingDayCumulative(scopedRows, options.year - 1, options.month);
-  const selectedRows = scopedRows.filter((row) => row.year === options.year && row.month === options.month);
+function buildDataAwareMonthlyProjection(rows: AppRow[], year: number, month: number, referenceDate = new Date()) {
+  const monthCumulative = buildMonthWorkingDayCumulative(rows, year, month);
+  const selectedRows = rows.filter((row) => row.year === year && row.month === month);
   const latestSelectedDate = selectedRows
     .map((row) => row.dateISO ? new Date(row.dateISO) : null)
     .filter((date): date is Date => Boolean(date && !Number.isNaN(date.getTime())))
     .sort((a, b) => b.getTime() - a.getTime())[0] || null;
-
-  const calendarCutoff = currentRealMonth
-    ? workedDaysInMonth(options.year, options.month - 1, referenceDate)
-    : selectedMonth.totalWorkingDays;
-  const dataCutoff = selectedMonth.lastDataIndex || (latestSelectedDate ? workedDaysInMonth(options.year, options.month - 1, latestSelectedDate) : 0);
-  const isPartial = currentRealMonth || (dataCutoff > 0 && dataCutoff < selectedMonth.totalWorkingDays);
+  const isCurrentRealMonth = referenceDate.getFullYear() === year && referenceDate.getMonth() + 1 === month;
+  const calendarCutoff = isCurrentRealMonth
+    ? workedDaysInMonth(year, month - 1, referenceDate)
+    : monthCumulative.totalWorkingDays;
+  const dataCutoff = monthCumulative.lastDataIndex || (latestSelectedDate ? workedDaysInMonth(year, month - 1, latestSelectedDate) : 0);
+  const hasPartialData = dataCutoff > 0 && dataCutoff < monthCumulative.totalWorkingDays;
   const cutoffIndex = Math.max(1, Math.min(
-    selectedMonth.totalWorkingDays,
-    currentRealMonth && dataCutoff > 0 ? Math.min(calendarCutoff, dataCutoff) : (dataCutoff > 0 && dataCutoff < selectedMonth.totalWorkingDays ? dataCutoff : calendarCutoff),
+    monthCumulative.totalWorkingDays,
+    isCurrentRealMonth && dataCutoff > 0
+      ? Math.min(calendarCutoff, dataCutoff)
+      : (hasPartialData ? dataCutoff : calendarCutoff),
   ));
+  const cutoffValue = monthCumulative.values[cutoffIndex] || { amount: 0, practices: 0 };
+  const dailyAverage = cutoffIndex > 0 ? cutoffValue.amount / cutoffIndex : 0;
+  const projection = dailyAverage * monthCumulative.totalWorkingDays;
+
+  return {
+    monthCumulative,
+    selectedRows,
+    latestSelectedDate,
+    isCurrentRealMonth,
+    calendarCutoff,
+    dataCutoff,
+    isPartial: isCurrentRealMonth || hasPartialData,
+    cutoffIndex,
+    cutoffValue,
+    totalWorkingDays: monthCumulative.totalWorkingDays,
+    dailyAverage,
+    projection,
+  };
+}
+
+function buildWorkingDayBenchmarkComparison(rows: AppRow[], options: WorkingDayBenchmarkOptions) {
+  const scopedRows = filterRowsForWorkingDayBenchmark(rows, options);
+  const referenceDate = options.referenceDate || new Date();
+  const monthlyProjection = buildDataAwareMonthlyProjection(scopedRows, options.year, options.month, referenceDate);
+  const selectedMonth = monthlyProjection.monthCumulative;
+  const previousMonthRef = previousMonthYearMonth(options.year, options.month);
+  const previousMonth = buildMonthWorkingDayCumulative(scopedRows, previousMonthRef.year, previousMonthRef.month);
+  const previousYear = buildMonthWorkingDayCumulative(scopedRows, options.year - 1, options.month);
+  const selectedRows = monthlyProjection.selectedRows;
+  const latestSelectedDate = monthlyProjection.latestSelectedDate;
+  const isPartial = monthlyProjection.isPartial;
+  const cutoffIndex = monthlyProjection.cutoffIndex;
 
   const ytdMonths = Array.from({ length: options.month }, (_, index) => index + 1);
   const ytdMonthSeries = ytdMonths.map((month) => ({ month, cumulative: buildMonthWorkingDayCumulative(scopedRows, options.year, month) }));
@@ -716,16 +744,16 @@ function buildWorkingDayBenchmarkComparison(rows: AppRow[], options: WorkingDayB
     };
   }).slice(0, isPartial ? cutoffIndex : selectedMonth.totalWorkingDays);
 
-  const currentAtCutoff = safeValue(selectedMonth, cutoffIndex);
+  const currentAtCutoff = monthlyProjection.cutoffValue;
   const previousMonthAtCutoff = safeValue(previousMonth, cutoffIndex);
   const previousYearAtCutoff = safeValue(previousYear, cutoffIndex);
   const bestAtCutoff = safeValue(bestMonth, cutoffIndex);
   const averageAtCutoff = ytdMonthSeries.length
     ? ytdMonthSeries.reduce((sum, item) => sum + safeValue(item.cumulative, cutoffIndex).amount, 0) / ytdMonthSeries.length
     : 0;
-  const totalWorkingDays = selectedMonth.totalWorkingDays;
-  const dailyAverage = cutoffIndex > 0 ? currentAtCutoff.amount / cutoffIndex : 0;
-  const projection = dailyAverage * totalWorkingDays;
+  const totalWorkingDays = monthlyProjection.totalWorkingDays;
+  const dailyAverage = monthlyProjection.dailyAverage;
+  const projection = monthlyProjection.projection;
 
   return {
     series,
@@ -1308,12 +1336,26 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
     const seasonality = Number(stagionalita[index] || 0);
     const stimato = target ? target * seasonality : 0;
     const workingDays = workingDaysInMonth(year, index);
-    const workedDays = year < currentYear ? workingDays : year === currentYear ? workedDaysInMonth(year, index, referenceDate) : 0;
-    const mediaGg = workedDays > 0 ? item.erogato / workedDays : 0;
-    const ipotetico = mediaGg > 0 ? mediaGg * workingDays : item.erogato || stimato;
+    const isCompletedMonth = year < currentYear || (year === currentYear && index < currentMonth);
+    const isCurrentMonth = year === currentYear && index === currentMonth;
+    let workedDays = 0;
+    let mediaGg = 0;
+    let ipotetico = item.erogato || stimato;
     let note = 'Futuro';
-    if (year < currentYear || (year === currentYear && index < currentMonth)) note = 'Completato';
-    if (year === currentYear && index === currentMonth) note = 'Mese corrente';
+
+    if (isCompletedMonth) {
+      workedDays = workingDays;
+      mediaGg = workedDays > 0 ? item.erogato / workedDays : 0;
+      ipotetico = item.erogato;
+      note = 'Completato';
+    } else if (isCurrentMonth) {
+      const monthlyProjection = buildDataAwareMonthlyProjection(rows, year, index + 1, referenceDate);
+      workedDays = monthlyProjection.cutoffIndex;
+      mediaGg = monthlyProjection.dailyAverage;
+      ipotetico = monthlyProjection.projection;
+      note = 'Mese corrente';
+    }
+
     return { ...item, seasonality, stimato, workingDays, workedDays, mediaGg, ipotetico, deltaTarget: item.erogato - stimato, note };
   });
   const ytd = monthlyForecast.reduce((sum, item, index) => {
@@ -1325,7 +1367,7 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
     if (year < currentYear) return sum + item.erogato;
     if (year > currentYear) return sum + item.stimato;
     if (index < currentMonth) return sum + item.erogato;
-    if (index === currentMonth) return sum + Math.max(item.erogato, item.ipotetico, item.stimato);
+    if (index === currentMonth) return sum + item.ipotetico;
     return sum + item.stimato;
   }, 0);
   return { annualTarget: target, projectedAnnual, ytd, gapToTarget: target ? projectedAnnual - target : 0, monthlyForecast };

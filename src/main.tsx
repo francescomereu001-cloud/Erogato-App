@@ -116,6 +116,7 @@ type WorkbookImport = {
 
 type ViewGranularity = 'monthly' | 'weekly' | 'daily';
 type DataSourceMode = 'supabase' | 'local' | 'empty';
+type SimulationSummary = { fileName: string; validRows: number; discardedRows: number; totalErogato: number; years: number[]; dealerCount: number; branchCount: number; loadedAt: string; previewRows: AppRow[]; };
 type DealerSortKey = 'erogato' | 'crescitaPct' | 'ticketMedio' | 'provvigioni';
 type BranchMacroFilter = 'ALL' | 'AUTO' | 'POS';
 type TrendPeriodMode = 'ytd' | 'month';
@@ -1026,6 +1027,18 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
     .filter((row): row is AppRow => Boolean(row));
 }
 
+function buildSimulationSummary(fileName: string, sourceRowsCount: number, normalizedRows: AppRow[]): SimulationSummary {
+  return { fileName, validRows: normalizedRows.length, discardedRows: Math.max(sourceRowsCount - normalizedRows.length, 0), totalErogato: normalizedRows.reduce((sum, row) => sum + row.importoFinanziato, 0), years: Array.from(new Set(normalizedRows.map((row) => row.year).filter(Boolean))).sort((a, b) => a - b), dealerCount: new Set(normalizedRows.map((row) => row.dealer).filter(Boolean)).size, branchCount: new Set(normalizedRows.map((row) => row.subagente).filter(Boolean)).size, loadedAt: new Date().toISOString(), previewRows: normalizedRows.slice(0, 10) };
+}
+
+function yieldToBrowser() {
+  return new Promise<void>((resolve) => {
+    const idle = (window as unknown as { requestIdleCallback?: (callback: () => void) => void }).requestIdleCallback;
+    if (idle) idle(() => resolve());
+    else window.setTimeout(resolve, 0);
+  });
+}
+
 function mergeRows(existing: AppRow[], incoming: AppRow[]) {
   const map = new Map(existing.map((row) => [row.rowId, row]));
   incoming.forEach((row) => map.set(row.rowId, row));
@@ -1459,6 +1472,14 @@ function App() {
   const [trendMacroProduct, setTrendMacroProduct] = useState<TrendMacroFilter>('ALL');
   const [trendBranch, setTrendBranch] = useState('ALL');
   const [trendDealer, setTrendDealer] = useState('ALL');
+  const [simulationMode, setSimulationMode] = useState(false);
+  const [simulationRows, setSimulationRows] = useState<AppRow[]>([]);
+  const [simulationFileName, setSimulationFileName] = useState('');
+  const [simulationSummary, setSimulationSummary] = useState<SimulationSummary | null>(null);
+  const [simulationPendingRows, setSimulationPendingRows] = useState<AppRow[]>([]);
+  const [simulationPendingSummary, setSimulationPendingSummary] = useState<SimulationSummary | null>(null);
+  const [simulationLoading, setSimulationLoading] = useState(false);
+  const [simulationError, setSimulationError] = useState('');
 
   const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
     ['executive', 'Executive', Home],
@@ -1611,14 +1632,20 @@ useEffect(() => {
 }, []);
       
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }));
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }));
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch (error) {
+      console.error('Errore scrittura localStorage:', error);
+    }
   }, [rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics]);
 
+  const activeRows = simulationMode ? simulationRows : rows;
+
   const availableYears = useMemo(() => {
-    const values = Array.from(new Set([...rows.map((row) => row.year), ...productMonthlyMetrics.map((m) => m.year), ...policyMonthlyMetrics.map((m) => m.year)])).sort((a, b) => a - b);
+    const values = Array.from(new Set([...activeRows.map((row) => row.year), ...productMonthlyMetrics.map((m) => m.year), ...policyMonthlyMetrics.map((m) => m.year)])).sort((a, b) => a - b);
     return values.length ? values : [new Date().getFullYear()];
-  }, [rows, productMonthlyMetrics, policyMonthlyMetrics]);
+  }, [activeRows, productMonthlyMetrics, policyMonthlyMetrics]);
 
   useEffect(() => {
     if (!availableYears.includes(Number(yearFilter))) setYearFilter(String(availableYears[availableYears.length - 1]));
@@ -1628,8 +1655,8 @@ useEffect(() => {
     if (!availableYears.includes(trendYear)) setTrendYear(availableYears[availableYears.length - 1]);
   }, [availableYears, trendYear]);
 
-  const trendBranches = useMemo(() => ['ALL', ...Array.from(new Set(rows.map((row) => row.subagente).filter(Boolean))).sort()], [rows]);
-  const trendDealers = useMemo(() => ['ALL', ...Array.from(new Set(rows.map((row) => row.dealer).filter(Boolean))).sort()], [rows]);
+  const trendBranches = useMemo(() => ['ALL', ...Array.from(new Set(activeRows.map((row) => row.subagente).filter(Boolean))).sort()], [activeRows]);
+  const trendDealers = useMemo(() => ['ALL', ...Array.from(new Set(activeRows.map((row) => row.dealer).filter(Boolean))).sort()], [activeRows]);
   const trendFilters = useMemo<TrendFilters>(() => ({
     year: trendYear,
     monthLimit: trendMonthLimit,
@@ -1638,12 +1665,12 @@ useEffect(() => {
     branch: trendBranch,
     dealer: trendDealer,
   }), [trendYear, trendMonthLimit, trendPeriodMode, trendMacroProduct, trendBranch, trendDealer]);
-  const trendComparison = useMemo(() => buildYtdTrendComparison(rows, trendFilters), [rows, trendFilters]);
-  const trendMonthlySeries = useMemo(() => buildMonthlyYoYSeries(rows, trendFilters), [rows, trendFilters]);
-  const trendBranchTable = useMemo(() => buildBranchTrendTable(rows, trendFilters), [rows, trendFilters]);
-  const trendMacroMixTable = useMemo(() => buildBranchMacroMixTable(rows, trendFilters), [rows, trendFilters]);
-  const trendVariationCauses = useMemo(() => buildTrendVariationCauses(rows, trendFilters), [rows, trendFilters]);
-  const trendAlerts = useMemo(() => buildTrendAlerts(rows, trendFilters, trendBranchTable), [rows, trendFilters, trendBranchTable]);
+  const trendComparison = useMemo(() => buildYtdTrendComparison(activeRows, trendFilters), [activeRows, trendFilters]);
+  const trendMonthlySeries = useMemo(() => buildMonthlyYoYSeries(activeRows, trendFilters), [activeRows, trendFilters]);
+  const trendBranchTable = useMemo(() => buildBranchTrendTable(activeRows, trendFilters), [activeRows, trendFilters]);
+  const trendMacroMixTable = useMemo(() => buildBranchMacroMixTable(activeRows, trendFilters), [activeRows, trendFilters]);
+  const trendVariationCauses = useMemo(() => buildTrendVariationCauses(activeRows, trendFilters), [activeRows, trendFilters]);
+  const trendAlerts = useMemo(() => buildTrendAlerts(activeRows, trendFilters, trendBranchTable), [activeRows, trendFilters, trendBranchTable]);
   const trendPeriodLabel = trendPeriodMode === 'ytd' ? `YTD fino a ${MONTHS_IT[trendMonthLimit - 1]}` : `Solo ${MONTHS_IT[trendMonthLimit - 1]}`;
   const formatTrendPct = (value: number | null) => value === null ? 'n.d.' : pct(value);
 
@@ -1663,13 +1690,13 @@ useEffect(() => {
   );
 
   const currentYear = Number(yearFilter);
-  const yearRows = useMemo(() => rows.filter((row) => row.year === currentYear), [rows, currentYear]);
+  const yearRows = useMemo(() => activeRows.filter((row) => row.year === currentYear), [activeRows, currentYear]);
   const dealers = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.dealer))).sort()], [yearRows]);
   const subagenti = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.subagente))).sort()], [yearRows]);
   const products = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.prodottoCode))).sort()], [yearRows]);
 
   const filteredRows = useMemo(() => {
-    return rows.filter((row) => {
+    return activeRows.filter((row) => {
       const yearOk = row.year === currentYear;
       const dealerOk = dealerFilter === 'ALL' || row.dealer === dealerFilter;
       const subagenteOk = subagenteFilter === 'ALL' || row.subagente === subagenteFilter;
@@ -1678,9 +1705,9 @@ useEffect(() => {
       const searchOk = !search || searchPool.includes(search.toLowerCase());
       return yearOk && dealerOk && subagenteOk && productOk && searchOk;
     });
-  }, [rows, currentYear, dealerFilter, subagenteFilter, productFilter, search]);
+  }, [activeRows, currentYear, dealerFilter, subagenteFilter, productFilter, search]);
   const filteredRowsAllYears = useMemo(() => {
-    return rows.filter((row) => {
+    return activeRows.filter((row) => {
       const dealerOk = dealerFilter === 'ALL' || row.dealer === dealerFilter;
       const subagenteOk = subagenteFilter === 'ALL' || row.subagente === subagenteFilter;
       const productOk = productFilter === 'ALL' || row.prodottoCode === productFilter;
@@ -1688,7 +1715,7 @@ useEffect(() => {
       const searchOk = !search || searchPool.includes(search.toLowerCase());
       return dealerOk && subagenteOk && productOk && searchOk;
     });
-  }, [rows, dealerFilter, subagenteFilter, productFilter, search]);
+  }, [activeRows, dealerFilter, subagenteFilter, productFilter, search]);
 
   const hasExtraFilters = dealerFilter !== 'ALL' || subagenteFilter !== 'ALL' || productFilter !== 'ALL' || Boolean(search);
   const monthlyData = useMemo(() => monthSeriesFromRows(filteredRows, currentYear), [filteredRows, currentYear]);
@@ -1811,10 +1838,10 @@ useEffect(() => {
   const comparisonYears = useMemo(() => {
     const previous = currentYear - 1;
     if (!availableYears.includes(previous)) return [] as Record<string, number | string>[];
-    const currentData = monthSeriesFromRows(rows, currentYear);
-    const previousData = monthSeriesFromRows(rows, previous);
+    const currentData = monthSeriesFromRows(activeRows, currentYear);
+    const previousData = monthSeriesFromRows(activeRows, previous);
     return currentData.map((row, index) => ({ month: row.monthShort, [currentYear]: row.erogato, [previous]: previousData[index]?.erogato || 0 }));
-  }, [rows, currentYear, availableYears]);
+  }, [activeRows, currentYear, availableYears]);
 
   useEffect(() => {
     if (!periodOptions.length) {
@@ -2015,7 +2042,7 @@ useEffect(() => {
     return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, last12Rows, sum, count, ticket };
   }, [selectedDealerDetail, filteredRowsAllYears, currentYear]);
   const dealerAlerts = useMemo(() => buildDealerAlerts(smartDealerTable), [smartDealerTable]);
-  const trendWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(rows, {
+  const trendWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(activeRows, {
     year: trendYear,
     month: trendMonthLimit,
     macroProduct: trendMacroProduct,
@@ -2023,7 +2050,7 @@ useEffect(() => {
     dealer: trendDealer,
     periodMode: trendPeriodMode,
     referenceDate: new Date(),
-  }), [rows, trendYear, trendMonthLimit, trendMacroProduct, trendBranch, trendDealer, trendPeriodMode]);
+  }), [activeRows, trendYear, trendMonthLimit, trendMacroProduct, trendBranch, trendDealer, trendPeriodMode]);
 
   const executiveWorkingDaySummary = useMemo(() => buildWorkingDayBenchmarkComparison(filteredRowsAllYears, {
     year: currentYear,
@@ -2144,6 +2171,53 @@ useEffect(() => {
     setUploading(false);
   }
 }
+
+
+ async function handleSimulationFile(fileList: FileList | null) {
+  const file = fileList?.[0];
+  if (!file) return;
+  setSimulationLoading(true);
+  setSimulationError('');
+  setSimulationPendingRows([]);
+  setSimulationPendingSummary(null);
+  try {
+    await yieldToBrowser();
+    const parsed = await readWorkbookFile(file);
+    await yieldToBrowser();
+    const normalizedRows = normalizeImportedRows(parsed.rows, parsed.fileName);
+    const dedupedRows = Array.from(new Map(normalizedRows.map((row) => [row.stableIdentity, row])).values());
+    const summary = buildSimulationSummary(parsed.fileName, parsed.rows.length, dedupedRows);
+    setSimulationPendingRows(dedupedRows);
+    setSimulationPendingSummary(summary);
+    if (parsed.rows.length > 30000) setSimulationError('File pesante: l’analisi può richiedere alcuni secondi e rallentare il browser.');
+  } catch (error) {
+    console.error('Errore simulazione Excel:', error);
+    setSimulationError(error instanceof Error ? error.message : 'Errore durante la lettura del file temporaneo.');
+  } finally {
+    setSimulationLoading(false);
+  }
+}
+
+  function startSimulation() {
+    if (!simulationPendingRows.length || !simulationPendingSummary) return;
+    setSimulationRows(simulationPendingRows);
+    setSimulationSummary(simulationPendingSummary);
+    setSimulationFileName(simulationPendingSummary.fileName);
+    setSimulationMode(true);
+    setSimulationPendingRows([]);
+    setSimulationPendingSummary(null);
+    setTab('executive');
+  }
+
+  function exitSimulation() {
+    setSimulationMode(false);
+    setSimulationRows([]);
+    setSimulationFileName('');
+    setSimulationSummary(null);
+    setSimulationPendingRows([]);
+    setSimulationPendingSummary(null);
+    setSimulationError('');
+  }
 
 
   function clearArchive() {
@@ -2294,7 +2368,7 @@ useEffect(() => {
   const currentMonthIndex = currentYear === now.getFullYear() ? now.getMonth() + 1 : fallbackCurrentMonth;
   const currentMonthCard = monthlyData[currentMonthIndex - 1];
   const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
-  const previousYearSameMonth = monthSeriesFromRows(rows, currentYear - 1)[currentMonthIndex - 1];
+  const previousYearSameMonth = monthSeriesFromRows(activeRows, currentYear - 1)[currentMonthIndex - 1];
   const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : 0;
   const currentMonthWorkedDays = executiveWorkingDaySummary.cutoffIndex;
   const currentMonthYtdErogato = executiveWorkingDaySummary.kpi.current;
@@ -2313,16 +2387,16 @@ useEffect(() => {
   }), [dealerAlerts]);
   const dataQuality = useMemo(() => {
     const duplicates = new Map<string, number>();
-    rows.forEach((r) => duplicates.set(r.stableIdentity, (duplicates.get(r.stableIdentity) || 0) + 1));
+    activeRows.forEach((r) => duplicates.set(r.stableIdentity, (duplicates.get(r.stableIdentity) || 0) + 1));
     return {
-      dealerND: rows.filter((r) => !r.dealer || r.dealer === 'N/D').length,
-      prodottoMancante: rows.filter((r) => !r.prodottoCode).length,
-      provvigioneZero: rows.filter((r) => r.provvigione === 0).length,
-      importiAnomali: rows.filter((r) => r.importoFinanziato > 200000 || r.importoFinanziato < 300).length,
-      dateMancanti: rows.filter((r) => !r.dateISO).length,
+      dealerND: activeRows.filter((r) => !r.dealer || r.dealer === 'N/D').length,
+      prodottoMancante: activeRows.filter((r) => !r.prodottoCode).length,
+      provvigioneZero: activeRows.filter((r) => r.provvigione === 0).length,
+      importiAnomali: activeRows.filter((r) => r.importoFinanziato > 200000 || r.importoFinanziato < 300).length,
+      dateMancanti: activeRows.filter((r) => !r.dateISO).length,
       duplicate: Array.from(duplicates.values()).filter((v) => v > 1).length,
     };
-  }, [rows]);
+  }, [activeRows]);
 
   const dealerWeightAnalytics = useMemo(() => {
     const { stats, totalErogato, totalAutoDealers, totalPosDealers } = buildDealerPortfolioStats(filteredRows);
@@ -2423,13 +2497,13 @@ useEffect(() => {
               <div className="topbar-title">{sectionTitles[tab]}</div>
               <div className="topbar-meta">
                 <span className="topbar-chip">Anno: {currentYear}</span>
-                <span className="topbar-chip">Fonte: {dataSourceMode === 'supabase' ? 'Supabase' : dataSourceMode === 'local' ? 'Locale' : 'Vuoto'}</span>
-                <span className="topbar-chip">Pratiche: {num(rows.length)}</span>
+                <span className="topbar-chip">Fonte: {simulationMode ? 'Simulazione temporanea' : dataSourceMode === 'supabase' ? 'Supabase' : dataSourceMode === 'local' ? 'Locale' : 'Vuoto'}</span>
+                <span className="topbar-chip">Pratiche: {num(activeRows.length)}</span>
               </div>
             </div>
             <div className="hero-actions">
               <div className="desktop-actions">
-                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Carica Excel'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
+                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
                 <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
                 <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} /></label>
                 <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
@@ -2438,7 +2512,7 @@ useEffect(() => {
                 <button className="action-button primary" onClick={() => setActionsOpen((v) => !v)}><Menu className="icon" />Azioni</button>
                 {actionsOpen && (
                   <div className="actions-popover">
-                    <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Carica Excel'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => {handleFiles(e.target.files); setActionsOpen(false);}} /></label>
+                    <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => {handleFiles(e.target.files); setActionsOpen(false);}} /></label>
                     <button className="action-button" onClick={() => { exportBackup(); setActionsOpen(false); }}><Download className="icon" />Backup</button>
                     <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) { importBackup(file); setActionsOpen(false);} }} /></label>
                     <button className="action-button danger" onClick={() => { clearArchive(); setActionsOpen(false); }}><Trash2 className="icon" />Azzera archivio</button>
@@ -2448,6 +2522,24 @@ useEffect(() => {
             </div>
           </header>
           <div className="content-area">
+            {simulationMode && simulationSummary ? (
+              <div className="simulation-banner">
+                <div>
+                  <div className="simulation-title">MODALITÀ SIMULAZIONE ATTIVA — i dati visualizzati sono temporanei e NON sono salvati su Supabase.</div>
+                  <div className="simulation-meta">
+                    <span>File: <strong>{simulationFileName}</strong></span>
+                    <span>Righe valide: <strong>{num(simulationSummary.validRows)}</strong></span>
+                    <span>Totale erogato: <strong>{euro0(simulationSummary.totalErogato)}</strong></span>
+                    <span>Anni: <strong>{simulationSummary.years.join(', ') || '-'}</strong></span>
+                    <span>Dealer: <strong>{num(simulationSummary.dealerCount)}</strong></span>
+                    <span>Filiali/subagenti: <strong>{num(simulationSummary.branchCount)}</strong></span>
+                    <span>Scartate: <strong>{num(simulationSummary.discardedRows)}</strong></span>
+                    <span>Caricato: <strong>{new Date(simulationSummary.loadedAt).toLocaleString('it-IT')}</strong></span>
+                  </div>
+                </div>
+                <button className="action-button danger" onClick={exitSimulation}>Esci dalla simulazione</button>
+              </div>
+            ) : null}
 
         <section className="filters-card">
           <button className="mobile-filter-toggle action-button ghost" onClick={() => setMobileFiltersOpen((v) => !v)}><Search className="icon" />Filtri {mobileFiltersOpen ? <X className="icon" /> : null}</button>
@@ -3158,6 +3250,35 @@ useEffect(() => {
 
         {tab === 'data' && (
           <div className="stack">
+            <div className="panel-grid two-one">
+              <div className="panel import-panel-real">
+                <div className="panel-header"><h3>A) Import dati reali</h3><span>Salva su Supabase</span></div>
+                <p className="muted">Usa questo flusso solo per il tuo erogato reale. Il file viene normalizzato e salvato nella tabella Supabase <strong>pratiche</strong>.</p>
+                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
+              </div>
+              <div className="panel simulation-panel">
+                <div className="panel-header"><h3>B) Simulazione temporanea</h3><span>Solo browser, zero Supabase</span></div>
+                <p className="muted">Questa funzione permette di caricare temporaneamente un file erogato, ad esempio il totale agenzia, senza modificare Supabase. I dati spariscono quando esci dalla simulazione o aggiorni la pagina.</p>
+                <label className="action-button"><Upload className="icon" /><span>{simulationLoading ? 'Analisi file...' : 'Carica file solo per simulazione'}</span><input type="file" accept=".xlsx,.xlsm,.xls" hidden onChange={(e) => handleSimulationFile(e.target.files)} /></label>
+                {simulationError ? <div className="simulation-warning"><TriangleAlert className="icon" />{simulationError}</div> : null}
+                {simulationPendingSummary ? (
+                  <div className="simulation-preview stack">
+                    <div className="mini-grid four">
+                      <div className="mini-card"><div className="mini-label">File</div><div className="mini-value small-value">{simulationPendingSummary.fileName}</div></div>
+                      <div className="mini-card"><div className="mini-label">Righe valide</div><div className="mini-value">{num(simulationPendingSummary.validRows)}</div></div>
+                      <div className="mini-card"><div className="mini-label">Righe scartate</div><div className="mini-value">{num(simulationPendingSummary.discardedRows)}</div></div>
+                      <div className="mini-card"><div className="mini-label">Totale erogato</div><div className="mini-value">{euro0(simulationPendingSummary.totalErogato)}</div></div>
+                      <div className="mini-card"><div className="mini-label">Anni</div><div className="mini-value small-value">{simulationPendingSummary.years.join(', ') || '-'}</div></div>
+                      <div className="mini-card"><div className="mini-label">Dealer rilevati</div><div className="mini-value">{num(simulationPendingSummary.dealerCount)}</div></div>
+                      <div className="mini-card"><div className="mini-label">Filiali rilevate</div><div className="mini-value">{num(simulationPendingSummary.branchCount)}</div></div>
+                    </div>
+                    <div className="table-wrap"><table><thead><tr><th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th className="right">Importo</th></tr></thead><tbody>{simulationPendingSummary.previewRows.map((row) => <tr key={`sim-prev-${row.rowId}`}><td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td><td>{row.dealer}</td><td>{row.subagente}</td><td>{row.cliente}</td><td>{row.prodottoCode}</td><td className="right">{euro(row.importoFinanziato)}</td></tr>)}</tbody></table></div>
+                    <button className="action-button primary" onClick={startSimulation}>Avvia simulazione</button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
             <div className="mini-grid four">
               <div className="mini-card"><div className="mini-label">Dealer N/D</div><div className="mini-value">{num(dataQuality.dealerND)}</div></div>
               <div className="mini-card"><div className="mini-label">Prodotto mancante</div><div className="mini-value">{num(dataQuality.prodottoMancante)}</div></div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import {
@@ -98,6 +98,11 @@ type Settings = {
   stagionalitaByYear: Record<number, number[]>;
 };
 
+type PersistedSettings = {
+  settings: Settings;
+  updatedAt: string;
+};
+
 type ProductMonthlyMetric = {
   key: string;
   year: number;
@@ -178,6 +183,7 @@ type DealerAlert = {
 
 const STORAGE_KEY = 'dealer_erogato_app_v8b';
 const SETTINGS_STORAGE_KEY = `${STORAGE_KEY}_settings`;
+const REMOTE_SETTINGS_KEY = 'forecast_target';
 const MONTHS_IT = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
 const MONTHS_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
 const MONTH_MAP: Record<string, number> = {
@@ -215,23 +221,64 @@ function mergeSettings(settings?: Partial<Settings>): Settings {
   };
 }
 
-function loadStoredSettings(): Settings {
-  if (typeof window === 'undefined') return DEFAULT_SETTINGS;
+function loadStoredSettingsBundle(): PersistedSettings {
+  const fallback = { settings: DEFAULT_SETTINGS, updatedAt: new Date(0).toISOString() };
+  if (typeof window === 'undefined') return fallback;
 
   try {
     const rawSettings = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (rawSettings) return mergeSettings(JSON.parse(rawSettings) as Partial<Settings>);
+    if (rawSettings) {
+      const parsed = JSON.parse(rawSettings) as Partial<Settings> & { settings?: Partial<Settings>; updatedAt?: string };
+      return {
+        settings: mergeSettings(parsed.settings || parsed),
+        updatedAt: parsed.updatedAt || new Date(0).toISOString(),
+      };
+    }
 
     const rawArchive = window.localStorage.getItem(STORAGE_KEY);
     if (rawArchive) {
-      const parsed = JSON.parse(rawArchive) as { settings?: Partial<Settings> };
-      return mergeSettings(parsed.settings);
+      const parsed = JSON.parse(rawArchive) as { settings?: Partial<Settings>; settingsUpdatedAt?: string };
+      return { settings: mergeSettings(parsed.settings), updatedAt: parsed.settingsUpdatedAt || new Date(0).toISOString() };
     }
   } catch (error) {
     console.error('Errore lettura impostazioni locali:', error);
   }
 
-  return DEFAULT_SETTINGS;
+  return fallback;
+}
+
+function loadStoredSettings(): Settings {
+  return loadStoredSettingsBundle().settings;
+}
+
+function hasMeaningfulSettings(settings?: Partial<Settings>) {
+  return Boolean(
+    settings &&
+    (Object.keys(settings.annualTargetByYear || {}).length > 0 || Object.keys(settings.stagionalitaByYear || {}).length > 0)
+  );
+}
+
+async function loadRemoteSettings(): Promise<PersistedSettings | null> {
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value, updated_at')
+    .eq('key', REMOTE_SETTINGS_KEY)
+    .maybeSingle();
+
+  if (error) throw error;
+  const value = data?.value as Partial<Settings> | { settings?: Partial<Settings> } | null | undefined;
+  const remoteSettings = value && 'settings' in value ? value.settings : value;
+  if (!hasMeaningfulSettings(remoteSettings)) return null;
+
+  return { settings: mergeSettings(remoteSettings || {}), updatedAt: data?.updated_at || new Date(0).toISOString() };
+}
+
+async function saveRemoteSettings(settings: Settings, updatedAt: string) {
+  if (!hasMeaningfulSettings(settings)) return;
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: REMOTE_SETTINGS_KEY, value: settings, updated_at: updatedAt }, { onConflict: 'key' });
+  if (error) throw error;
 }
 
 function normalizeHeaderKey(key: string) {
@@ -1495,7 +1542,10 @@ function App() {
   const [productMonthlyMetrics, setProductMonthlyMetrics] = useState<ProductMonthlyMetric[]>([]);
   const [policyMonthlyMetrics, setPolicyMonthlyMetrics] = useState<PolicyMonthlyMetric[]>([]);
   const [importedFiles, setImportedFiles] = useState<string[]>([]);
-  const [settings, setSettings] = useState<Settings>(() => loadStoredSettings());
+  const initialSettingsBundle = useRef(loadStoredSettingsBundle());
+  const [settings, setSettings] = useState<Settings>(() => initialSettingsBundle.current.settings);
+  const settingsUpdatedAtRef = useRef(initialSettingsBundle.current.updatedAt);
+  const settingsHydratedRef = useRef(false);
   const [tab, setTab] = useState<'executive' | 'trend' | 'focus' | 'forecast' | 'intelligence' | 'alerts' | 'products' | 'subagenti' | 'portfolio' | 'data'>('executive');
   const [search, setSearch] = useState('');
   const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
@@ -1529,6 +1579,11 @@ function App() {
   const [simulationPendingSummary, setSimulationPendingSummary] = useState<SimulationSummary | null>(null);
   const [simulationLoading, setSimulationLoading] = useState(false);
   const [simulationError, setSimulationError] = useState('');
+
+  const selectTab = (nextTab: typeof tab) => {
+    setTab(nextTab);
+    setMoreOpen(false);
+  };
 
   const primaryMobileTabs: Array<[typeof tab, string, typeof Home]> = [
     ['executive', 'Executive', Home],
@@ -1676,12 +1731,16 @@ useEffect(() => {
         rows?: AppRow[];
         importedFiles?: string[];
         settings?: Settings;
+        settingsUpdatedAt?: string;
         productMonthlyMetrics?: ProductMonthlyMetric[];
         policyMonthlyMetrics?: PolicyMonthlyMetric[];
       };
       setRows(parsed.rows || []);
       setImportedFiles(parsed.importedFiles || []);
-      setSettings(mergeSettings(parsed.settings));
+      if (hasMeaningfulSettings(parsed.settings)) {
+        settingsUpdatedAtRef.current = parsed.settingsUpdatedAt || settingsUpdatedAtRef.current;
+        setSettings(mergeSettings(parsed.settings));
+      }
       setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
       setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
       setDataSourceMode((parsed.rows || []).length ? 'local' : 'empty');
@@ -1693,15 +1752,60 @@ useEffect(() => {
 
   loadData();
 }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateRemoteSettings = async () => {
+      try {
+        const remote = await loadRemoteSettings();
+        if (!remote || cancelled) return;
+
+        const localTime = Date.parse(settingsUpdatedAtRef.current || '');
+        const remoteTime = Date.parse(remote.updatedAt || '');
+        if (Number.isFinite(remoteTime) && (!Number.isFinite(localTime) || remoteTime > localTime)) {
+          settingsUpdatedAtRef.current = remote.updatedAt;
+          setSettings(remote.settings);
+        }
+      } catch (error) {
+        console.error('Errore caricamento impostazioni remote:', error);
+      } finally {
+        if (!cancelled) settingsHydratedRef.current = true;
+      }
+    };
+
+    hydrateRemoteSettings();
+    return () => { cancelled = true; };
+  }, []);
       
   useEffect(() => {
+    const isInitialSettingsWrite = !settingsHydratedRef.current;
+    if (isInitialSettingsWrite) {
+      settingsHydratedRef.current = true;
+    } else {
+      settingsUpdatedAtRef.current = new Date().toISOString();
+    }
+
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }));
-      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, settingsUpdatedAt: settingsUpdatedAtRef.current, productMonthlyMetrics, policyMonthlyMetrics }));
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...settings, updatedAt: settingsUpdatedAtRef.current }));
     } catch (error) {
       console.error('Errore scrittura localStorage:', error);
     }
-  }, [rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics]);
+
+    if (!isInitialSettingsWrite) {
+      const updatedAt = settingsUpdatedAtRef.current;
+      saveRemoteSettings(settings, updatedAt).catch((error) => console.error('Errore salvataggio impostazioni remote:', error));
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ rows, importedFiles, settings, settingsUpdatedAt: settingsUpdatedAtRef.current, productMonthlyMetrics, policyMonthlyMetrics }));
+    } catch (error) {
+      console.error('Errore scrittura archivio locale:', error);
+    }
+  }, [rows, importedFiles, productMonthlyMetrics, policyMonthlyMetrics, settings]);
 
   const activeRows = simulationMode ? simulationRows : rows;
 
@@ -2331,7 +2435,7 @@ useEffect(() => {
   }
 
   function exportBackup() {
-    const blob = new Blob([JSON.stringify({ rows, importedFiles, settings, productMonthlyMetrics, policyMonthlyMetrics }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ rows, importedFiles, settings, settingsUpdatedAt: settingsUpdatedAtRef.current, productMonthlyMetrics, policyMonthlyMetrics }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -2426,12 +2530,16 @@ useEffect(() => {
           rows?: AppRow[];
           importedFiles?: string[];
           settings?: Settings;
+          settingsUpdatedAt?: string;
           productMonthlyMetrics?: ProductMonthlyMetric[];
           policyMonthlyMetrics?: PolicyMonthlyMetric[];
         };
         setRows(parsed.rows || []);
         setImportedFiles(parsed.importedFiles || []);
-        setSettings(mergeSettings(parsed.settings));
+        if (hasMeaningfulSettings(parsed.settings)) {
+          settingsUpdatedAtRef.current = parsed.settingsUpdatedAt || settingsUpdatedAtRef.current;
+          setSettings(mergeSettings(parsed.settings));
+        }
         setProductMonthlyMetrics(parsed.productMonthlyMetrics || []);
         setPolicyMonthlyMetrics(parsed.policyMonthlyMetrics || []);
         setDataSourceMode((parsed.rows || []).length ? 'local' : 'empty');
@@ -3446,19 +3554,30 @@ useEffect(() => {
           </div>
           <nav className="bottom-nav">
             {primaryMobileTabs.map(([key, label, Icon]) => (
-              <button key={key} className={`bottom-nav-item ${tab === key ? 'active' : ''}`} onClick={() => setTab(key)}><Icon className="icon" /><span>{label}</span></button>
+              <button key={key} className={`bottom-nav-item ${tab === key ? 'active' : ''}`} onClick={() => selectTab(key)}><Icon className="icon" /><span>{label}</span></button>
             ))}
             <div className="bottom-nav-more">
-              <button className={`bottom-nav-item ${secondaryTabs.some(([key]) => key === tab) ? 'active' : ''}`} onClick={() => setMoreOpen((v) => !v)}><MoreHorizontal className="icon" /><span>Altro</span></button>
-              {moreOpen && (
-                <div className="more-popover">
-                  {secondaryTabs.map(([key, label, Icon]) => (
-                    <button key={key} className={`sidebar-item ${tab === key ? 'active' : ''}`} onClick={() => { setTab(key); setMoreOpen(false); }}><Icon className="icon" /><span>{label}</span></button>
-                  ))}
-                </div>
-              )}
+              <button className={`bottom-nav-item ${secondaryTabs.some(([key]) => key === tab) ? 'active' : ''}`} onClick={() => setMoreOpen((v) => !v)} aria-expanded={moreOpen} aria-controls="mobile-more-sheet"><MoreHorizontal className="icon" /><span>Altro</span></button>
             </div>
           </nav>
+          {moreOpen && (
+            <div className="mobile-more-overlay" onClick={() => setMoreOpen(false)}>
+              <div id="mobile-more-sheet" className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="Altre sezioni" onClick={(event) => event.stopPropagation()}>
+                <div className="mobile-more-header">
+                  <div>
+                    <div className="mobile-more-title">Altro</div>
+                    <div className="mobile-more-subtitle">Sezioni disponibili anche su mobile</div>
+                  </div>
+                  <button className="mobile-more-close" onClick={() => setMoreOpen(false)} aria-label="Chiudi menu Altro"><X className="icon" /></button>
+                </div>
+                <div className="mobile-more-list">
+                  {secondaryTabs.map(([key, label, Icon]) => (
+                    <button key={key} className={`mobile-more-item ${tab === key ? 'active' : ''}`} onClick={() => selectTab(key)}><Icon className="icon" /><span>{label}</span></button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -1,0 +1,18 @@
+alter table public.pratiche
+  add column if not exists pratica text,
+  add column if not exists regione text,
+  add column if not exists convenzionato text,
+  add column if not exists des_convenzionato text,
+  add column if not exists punto_vendita text,
+  add column if not exists des_punto_vendita text,
+  add column if not exists dealer_code text,
+  add column if not exists subagente_codice text,
+  add column if not exists agente_codice text,
+  add column if not exists agente text,
+  add column if not exists situazione text,
+  add column if not exists data_caricamento date,
+  add column if not exists importo_netto_erogato numeric,
+  add column if not exists indirizzo text,
+  add column if not exists cap text,
+  add column if not exists localita text,
+  add column if not exists provincia text;

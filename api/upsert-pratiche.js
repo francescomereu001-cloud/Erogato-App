@@ -89,6 +89,23 @@ export default async function handler(req, res) {
       numero_rate: Number(row?.numero_rate || 0),
       importo_rata: Number(row?.importo_rata || 0),
       source_file: String(row?.source_file || ''),
+      pratica: String(row?.pratica || ''),
+      regione: String(row?.regione || ''),
+      convenzionato: String(row?.convenzionato || ''),
+      des_convenzionato: String(row?.des_convenzionato || ''),
+      punto_vendita: String(row?.punto_vendita || ''),
+      des_punto_vendita: String(row?.des_punto_vendita || ''),
+      dealer_code: String(row?.dealer_code || ''),
+      subagente_codice: String(row?.subagente_codice || ''),
+      agente_codice: String(row?.agente_codice || ''),
+      agente: String(row?.agente || ''),
+      situazione: String(row?.situazione || ''),
+      data_caricamento: row?.data_caricamento || null,
+      importo_netto_erogato: Number(row?.importo_netto_erogato || 0),
+      indirizzo: String(row?.indirizzo || ''),
+      cap: String(row?.cap || ''),
+      localita: String(row?.localita || ''),
+      provincia: String(row?.provincia || ''),
     });
   }
 

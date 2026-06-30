@@ -58,9 +58,17 @@ type AppRow = {
   rowId: string;
   stableIdentity: string;
   sourceFile: string;
+  pratica: string;
+  regione: string;
   convenzionato: string;
+  desConvenzionato: string;
+  puntoVendita: string;
+  desPuntoVendita: string;
+  dealerCode: string;
   dealer: string;
+  subagenteCode: string;
   subagente: string;
+  agenteCode: string;
   agente: string;
   situazione: string;
   cliente: string;
@@ -226,11 +234,38 @@ function loadStoredSettings(): Settings {
   return DEFAULT_SETTINGS;
 }
 
+function normalizeHeaderKey(key: string) {
+  return key
+    .trim()
+    .toUpperCase()
+    .replace(/[\s.-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function isPresentCell(value: unknown) {
+  return value !== undefined && value !== null && value !== '';
+}
+
 function pick(row: SourceRow, keys: string[], fallback = '') {
   for (const key of keys) {
     const value = row[key];
-    if (value !== undefined && value !== null && value !== '') return value as string;
+    if (isPresentCell(value)) return value as string;
   }
+
+  const normalizedEntries = new Map<string, unknown>();
+  Object.entries(row).forEach(([header, value]) => {
+    const normalized = normalizeHeaderKey(header);
+    if (normalized && !normalizedEntries.has(normalized)) {
+      normalizedEntries.set(normalized, value);
+    }
+  });
+
+  for (const key of keys) {
+    const value = normalizedEntries.get(normalizeHeaderKey(key));
+    if (isPresentCell(value)) return value as string;
+  }
+
   return fallback;
 }
 function parseItalianDateString(value: string) {
@@ -968,6 +1003,12 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
       const amount = cleanNumber(pick(row, ['IMPORTO_FINANZIATO']));
       const netAmount = cleanNumber(pick(row, ['IMPORTO_NETTO_EROGATO']));
       const prodottoCode = normalizeText(pick(row, ['PRODOTTO']));
+      const convenzionatoCode = normalizeText(pick(row, ['CONVENZIONATO']));
+      const desConvenzionato = normalizeText(pick(row, ['DES_CONVENZIONATO']));
+      const puntoVenditaCode = normalizeText(pick(row, ['PUNTO_VENDITA']));
+      const desPuntoVendita = normalizeText(pick(row, ['DES_PUNTO_VENDITA']));
+      const dealerCode = puntoVenditaCode || convenzionatoCode;
+      const dealerDisplay = desPuntoVendita || desConvenzionato || 'N/D';
       let polizza = cleanNumber(pick(row, ['importo polizza ', 'IMPORTO POLIZZA', 'IMPORTO_POLIZZA']));
       let provvigione = cleanNumber(pick(row, ['PROVV', 'PROVVIGIONE']));
       if (!provvigione && amount > 0) {
@@ -997,12 +1038,20 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
         rowId,
         stableIdentity,
         sourceFile: fileName,
-        convenzionato: normalizeText(pick(row, ['CONVENZIONATO'])),
-        dealer: normalizeText(pick(row, ['DES_CONVENZIONATO'], 'N/D')) || 'N/D',
+        pratica: normalizeText(pick(row, ['PRATICA'])),
+        regione: normalizeText(pick(row, ['REGIONE'])),
+        convenzionato: convenzionatoCode,
+        desConvenzionato,
+        puntoVendita: puntoVenditaCode,
+        desPuntoVendita,
+        dealerCode,
+        dealer: dealerDisplay,
+        subagenteCode: normalizeText(pick(row, ['SUBAGENTE'])),
         subagente: normalizeText(pick(row, ['DES_SUBAGENTE'], 'N/D')) || 'N/D',
-        agente: normalizeText(pick(row, ['DES_AGENTE'], 'N/D')) || 'N/D',
+        agenteCode: normalizeText(pick(row, ['AGENTE'])),
+        agente: normalizeText(pick(row, ['DES_AGENTE'])),
         situazione: normalizeText(pick(row, ['SITUAZIONE'])),
-        cliente: normalizeText(pick(row, ['DES_CLIENTE'], 'N/D')) || 'N/D',
+        cliente: normalizeText(pick(row, ['DES_CLIENTE', 'CLIENTE'], 'N/D')) || 'N/D',
         codiceFiscale: normalizeText(pick(row, ['CODICE_FISCALE_CLI'])),
         prodottoCode,
         prodottoLabel: normalizeProductLabel(prodottoCode),
@@ -1550,6 +1599,12 @@ useEffect(() => {
             const baseDate = dateValue ? new Date(`${dateValue}T12:00:00`) : null;
             const dateISO = baseDate && !Number.isNaN(baseDate.getTime()) ? baseDate.toISOString() : null;
             const prodottoCode = normalizeText(r.prodotto);
+            const desPuntoVendita = normalizeText(r.des_punto_vendita);
+            const desConvenzionato = normalizeText(r.des_convenzionato);
+            const dealer = desPuntoVendita || normalizeText(r.dealer) || desConvenzionato || 'N/D';
+            const puntoVendita = normalizeText(r.punto_vendita);
+            const convenzionato = normalizeText(r.convenzionato);
+            const dealerCode = normalizeText(r.dealer_code) || puntoVendita || convenzionato || dealer;
 
             const stableIdentity = normalizeText(r.unique_key) || [
               safeUpper(r.dealer),
@@ -1565,11 +1620,19 @@ useEffect(() => {
               rowId: stableIdentity,
               stableIdentity,
               sourceFile: normalizeText(r.source_file),
-              convenzionato: normalizeText(r.dealer),
-              dealer: normalizeText(r.dealer) || 'N/D',
+              pratica: normalizeText(r.pratica),
+              regione: normalizeText(r.regione),
+              convenzionato,
+              desConvenzionato,
+              puntoVendita,
+              desPuntoVendita,
+              dealerCode,
+              dealer,
+              subagenteCode: normalizeText(r.subagente_codice),
               subagente: normalizeText(r.subagente) || 'N/D',
-              agente: '',
-              situazione: '',
+              agenteCode: normalizeText(r.agente_codice),
+              agente: normalizeText(r.agente),
+              situazione: normalizeText(r.situazione),
               cliente: normalizeText(r.cliente) || 'N/D',
               codiceFiscale: normalizeText(r.codice_fiscale),
               prodottoCode,
@@ -1578,13 +1641,13 @@ useEffect(() => {
               numeroRate: cleanNumber(r.numero_rate),
               importoRata: cleanNumber(r.importo_rata),
               importoFinanziato: cleanNumber(r.importo_finanziato),
-              importoNettoErogato: cleanNumber(r.importo_finanziato),
-              dataCaricamento: null,
+              importoNettoErogato: cleanNumber(r.importo_netto_erogato) || cleanNumber(r.importo_finanziato),
+              dataCaricamento: typeof r.data_caricamento === 'string' ? r.data_caricamento : null,
               dataLiquidazione: dateISO,
-              indirizzo: '',
-              cap: '',
-              localita: '',
-              provincia: '',
+              indirizzo: normalizeText(r.indirizzo),
+              cap: normalizeText(r.cap),
+              localita: normalizeText(r.localita),
+              provincia: normalizeText(r.provincia),
               provvigione: cleanNumber(r.provvigione),
               polizza: cleanNumber(r.polizza),
               year: baseDate ? baseDate.getFullYear() : 0,
@@ -2111,6 +2174,23 @@ useEffect(() => {
       numero_rate: number;
       importo_rata: number;
       source_file: string;
+      pratica: string;
+      regione: string;
+      convenzionato: string;
+      des_convenzionato: string;
+      punto_vendita: string;
+      des_punto_vendita: string;
+      dealer_code: string;
+      subagente_codice: string;
+      agente_codice: string;
+      agente: string;
+      situazione: string;
+      data_caricamento: string | null;
+      importo_netto_erogato: number;
+      indirizzo: string;
+      cap: string;
+      localita: string;
+      provincia: string;
     }>();
 
     for (const row of dedupedImportedRows) {
@@ -2133,7 +2213,26 @@ useEffect(() => {
         tabella: row.tabella || '',
         numero_rate: Number(row.numeroRate || 0),
         importo_rata: Number(row.importoRata || 0),
-        source_file: row.sourceFile || ''
+        source_file: row.sourceFile || '',
+        pratica: row.pratica || '',
+        regione: row.regione || '',
+        convenzionato: row.convenzionato || '',
+        des_convenzionato: row.desConvenzionato || '',
+        punto_vendita: row.puntoVendita || '',
+        des_punto_vendita: row.desPuntoVendita || '',
+        dealer_code: row.dealerCode || '',
+        subagente_codice: row.subagenteCode || '',
+        agente_codice: row.agenteCode || '',
+        agente: row.agente || '',
+        situazione: row.situazione || '',
+        data_caricamento: row.dataCaricamento
+          ? new Date(row.dataCaricamento).toISOString().slice(0, 10)
+          : null,
+        importo_netto_erogato: Number(row.importoNettoErogato || row.importoFinanziato || 0),
+        indirizzo: row.indirizzo || '',
+        cap: row.cap || '',
+        localita: row.localita || '',
+        provincia: row.provincia || ''
       });
     }
 

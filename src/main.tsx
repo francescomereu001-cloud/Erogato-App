@@ -201,19 +201,30 @@ const MONTH_MAP: Record<string, number> = {
   dic: 12, dicembre: 12,
 };
 const DEFAULT_2026_STAGIONALITA = [0.0422467773, 0.0679778571, 0.0611428174, 0.0612145238, 0.0556212658, 0.0852724183, 0.1160142533, 0.0483985297, 0.10272674, 0.1183406974, 0.0991278003, 0.1419163194];
+const DEFAULT_2026_TARGET = 18000000;
+const LEGACY_2026_TARGETS_TO_UPGRADE = new Set([10200000, 12000000]);
 const DEFAULT_SETTINGS: Settings = {
-  annualTargetByYear: { 2026: 10200000 },
+  annualTargetByYear: { 2026: DEFAULT_2026_TARGET },
   stagionalitaByYear: { 2026: DEFAULT_2026_STAGIONALITA },
 };
 const AUTH_USERNAME = import.meta.env.VITE_APP_USERNAME;
 const AUTH_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
 
+function normalizeAnnualTargets(targets: Record<number, number> = {}) {
+  const normalized = { ...targets };
+  const current2026Target = Number(normalized[2026] || 0);
+  if (!current2026Target || LEGACY_2026_TARGETS_TO_UPGRADE.has(current2026Target)) {
+    normalized[2026] = DEFAULT_2026_TARGET;
+  }
+  return normalized;
+}
+
 function mergeSettings(settings?: Partial<Settings>): Settings {
   return {
-    annualTargetByYear: {
+    annualTargetByYear: normalizeAnnualTargets({
       ...DEFAULT_SETTINGS.annualTargetByYear,
       ...(settings?.annualTargetByYear || {}),
-    },
+    }),
     stagionalitaByYear: {
       ...DEFAULT_SETTINGS.stagionalitaByYear,
       ...(settings?.stagionalitaByYear || {}),
@@ -2000,7 +2011,19 @@ useEffect(() => {
   const subagenteRanking = useMemo(() => aggregateByField(branchFilteredRows, currentYear, 'subagente').slice(0, 12), [branchFilteredRows, currentYear]);
   const subagenteTable = useMemo(() => aggregateByField(branchFilteredRows, currentYear, 'subagente'), [branchFilteredRows, currentYear]);
   const mix = useMemo(() => productMix(filteredRows, currentYear), [filteredRows, currentYear]);
-  const forecast = useMemo(() => buildForecast(filteredRows, currentYear, settings, new Date()), [filteredRows, currentYear, settings]);
+  const forecastEvaluation = useMemo(() => {
+    const latestRowDate = filteredRows
+      .filter((row) => row.year === currentYear && row.dateISO)
+      .map((row) => new Date(row.dateISO!))
+      .filter((date) => !Number.isNaN(date.getTime()))
+      .sort((a, b) => b.getTime() - a.getTime())[0] || null;
+    return {
+      referenceDate: latestRowDate || new Date(),
+      referenceMonth: latestRowDate ? latestRowDate.getMonth() + 1 : new Date().getMonth() + 1,
+      source: latestRowDate ? 'latest-data' : 'system-date',
+    };
+  }, [filteredRows, currentYear]);
+  const forecast = useMemo(() => buildForecast(filteredRows, currentYear, mergeSettings(settings), forecastEvaluation.referenceDate), [filteredRows, currentYear, settings, forecastEvaluation.referenceDate]);
 
   const comparisonYears = useMemo(() => {
     const previous = currentYear - 1;
@@ -2231,13 +2254,13 @@ useEffect(() => {
 
   const forecastWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(filteredRowsAllYears, {
     year: currentYear,
-    month: new Date().getFullYear() === currentYear ? new Date().getMonth() + 1 : referenceMonth,
+    month: forecastEvaluation.referenceMonth,
     macroProduct: 'ALL',
     branch: 'ALL',
     dealer: 'ALL',
     periodMode: 'month',
-    referenceDate: new Date(),
-  }), [filteredRowsAllYears, currentYear, referenceMonth]);
+    referenceDate: forecastEvaluation.referenceDate,
+  }), [filteredRowsAllYears, currentYear, forecastEvaluation]);
 
 
  async function handleFiles(fileList: FileList | null) {
@@ -2995,19 +3018,19 @@ useEffect(() => {
               ) : (
                 <div className="stack">
                   <div className="mini-grid trend-causes-grid">
-                    <div className="mini-card">
+                    <div className="mini-card trend-cause-card">
                       <div className="panel-header"><h3>Top contributori positivi</h3><span>Primi 5 dealer per delta €</span></div>
-                      <div className="list-stack">
+                      <div className="horizontal-scroll"><div className="list-stack trend-cause-list">
                         {trendVariationCauses.positiveDealers.map(renderTrendCauseDealer)}
                         {!trendVariationCauses.positiveDealers.length && <div className="muted">Nessun contributore positivo nel periodo selezionato.</div>}
-                      </div>
+                      </div></div>
                     </div>
-                    <div className="mini-card">
+                    <div className="mini-card trend-cause-card">
                       <div className="panel-header"><h3>Top contributori negativi</h3><span>Primi 5 dealer per calo €</span></div>
-                      <div className="list-stack">
+                      <div className="horizontal-scroll"><div className="list-stack trend-cause-list">
                         {trendVariationCauses.negativeDealers.map(renderTrendCauseDealer)}
                         {!trendVariationCauses.negativeDealers.length && <div className="muted">Nessun contributore negativo nel periodo selezionato.</div>}
-                      </div>
+                      </div></div>
                     </div>
                   </div>
                   <div>
@@ -3137,6 +3160,7 @@ useEffect(() => {
         {tab === 'forecast' && (
           <div className="stack">
             <div className="mini-grid four">
+              <div className="mini-card"><div className="mini-label">Base valutazione</div><div className="mini-value small-value">{MONTHS_IT[forecastEvaluation.referenceMonth - 1]} {currentYear}</div><div className="mini-subtitle">{forecastEvaluation.source === 'latest-data' ? `Dati al ${forecastEvaluation.referenceDate.toLocaleDateString('it-IT')}` : 'Data di sistema'}</div></div>
               <div className="mini-card"><div className="mini-label">Target anno</div><div className="mini-value">{euro0(forecast.annualTarget)}</div></div>
               <div className="mini-card"><div className="mini-label">YTD reale</div><div className="mini-value">{euro0(forecast.ytd)}</div></div>
               <div className="mini-card"><div className="mini-label">Proiezione fine anno</div><div className="mini-value">{euro0(forecast.projectedAnnual)}</div></div>

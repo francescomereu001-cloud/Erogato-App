@@ -2213,6 +2213,7 @@ useEffect(() => {
     const last12Start = new Date(currentYearValue, currentMonth - 12, 1);
     const last12Rows = dealerRows.filter((r) => new Date(r.dateISO!) >= last12Start && new Date(r.dateISO!) <= analysisDate);
     const currentYearRows = dealerRows.filter((r) => r.year === currentYearValue);
+    const prevYearRows = dealerRows.filter((r) => r.year === prevYearValue);
     const ytdCurrentRows = dealerRows.filter((r) => r.year === currentYearValue && r.month <= ytdMonthLimit);
     const ytdPrevRows = dealerRows.filter((r) => r.year === prevYearValue && r.month <= ytdMonthLimit);
     const currentMonthRows = dealerRows.filter((r) => r.year === currentYearValue && r.month === currentMonth);
@@ -2257,7 +2258,7 @@ useEffect(() => {
     const ticketDelta = ticket(currentMonthRows) - ticket(previousMonthRows);
     insights.push({ key: 'ticket', label: ticketDelta >= 0 ? 'Ticket medio in crescita' : 'Ticket medio in calo', positive: ticketDelta >= 0 });
 
-    return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, last12Rows, sum, count, ticket, avgRates, rateCoverage };
+    return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, prevYearRows, last12Rows, sum, count, ticket, avgRates, rateCoverage };
   }, [selectedDealerDetail, filteredRowsAllYears, currentYear]);
   const dealerAlerts = useMemo(() => buildDealerAlerts(smartDealerTable), [smartDealerTable]);
   const trendWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(activeRows, {
@@ -2520,6 +2521,7 @@ useEffect(() => {
       last12Rows: dealerDetail.last12Rows,
       ytdCurrentRows: dealerDetail.ytdCurrentRows,
       ytdPrevRows: dealerDetail.ytdPrevRows,
+      prevYearRows: dealerDetail.prevYearRows,
       currentMonthRows: dealerDetail.currentMonthRows,
       previousMonthRows: dealerDetail.previousMonthRows,
       last12Monthly: dealerDetail.last12Monthly,
@@ -3276,7 +3278,7 @@ useEffect(() => {
                 <div className="panel-header"><h3>Scheda dealer: {selectedDealerDetail}</h3><div className="hero-actions"><button className="action-button" onClick={exportDealerGrowthPdf}><Download className="icon" />Report PDF dealer</button><button className="action-button" onClick={() => setSelectedDealerDetail(null)}><Home className="icon" />Torna alla lista dealer</button></div></div>
                 <section className="kpi-grid">
                   <KPI title="Erogato totale storico" value={euro0(dealerDetail.sum(dealerDetail.dealerRows))} icon={Euro} />
-                  <KPI title="Erogato ultimi 12 mesi" value={euro0(dealerDetail.sum(dealerDetail.last12Rows))} icon={CalendarDays} />
+                  <KPI title="Erogato anno precedente" value={euro0(dealerDetail.sum(dealerDetail.prevYearRows))} icon={CalendarDays} />
                   <KPI title="Erogato anno corrente" value={euro0(dealerDetail.sum(dealerDetail.currentYearRows))} icon={TrendingUp} />
                   <KPI title="Pratiche totali" value={num(dealerDetail.count(dealerDetail.dealerRows))} icon={Users} />
                   <KPI title="Pratiche anno corrente" value={num(dealerDetail.count(dealerDetail.currentYearRows))} icon={Users} />

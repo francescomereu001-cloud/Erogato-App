@@ -299,10 +299,31 @@ async function saveRemoteSettings(settings: Settings, updatedAt: string) {
 function normalizeHeaderKey(key: string) {
   return key
     .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
-    .replace(/[\s.-]+/g, '_')
+    .replace(/[^A-Z0-9]+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+const HEADER_ALIASES: Record<string, string[]> = {
+  DATA_LIQUIDAZIONE: ['DATA_LIQ', 'DATA_LIQUID', 'DT_LIQUIDAZIONE', 'DATA_EROGAZIONE', 'DT_EROGAZIONE', 'DATA_EROGATO'],
+  DATA_CARICAMENTO: ['DATA_CARIC', 'DT_CARICAMENTO', 'DATA_INSERIMENTO', 'DT_INSERIMENTO'],
+  IMPORTO_FINANZIATO: ['IMPORTO_FINANZ', 'IMP_FINANZIATO', 'IMP_FINANZ', 'CAPITALE_FINANZIATO', 'IMPORTO_EROGATO', 'LORDO_EROGATO', 'EROGATO'],
+  IMPORTO_NETTO_EROGATO: ['IMPORTO_NETTO', 'NETTO_EROGATO', 'NETTO_LIQUIDATO'],
+};
+
+function canonicalHeaderKey(value: unknown) {
+  const normalized = normalizeHeaderKey(String(value ?? ''));
+  for (const [canonical, aliases] of Object.entries(HEADER_ALIASES)) {
+    if (normalized === canonical || aliases.includes(normalized)) return canonical;
+  }
+  if (/^(?:DATA|DT).*(?:LIQUID|EROGAZ)/.test(normalized)) return 'DATA_LIQUIDAZIONE';
+  if (/^(?:DATA|DT).*(?:CARIC|INSER)/.test(normalized)) return 'DATA_CARICAMENTO';
+  if (/(?:NETTO).*(?:EROGAT|LIQUID)|(?:EROGAT|LIQUID).*(?:NETTO)/.test(normalized)) return 'IMPORTO_NETTO_EROGATO';
+  if (/(?:IMPORTO|IMP|CAPITALE).*(?:FINANZ|EROGAT)/.test(normalized)) return 'IMPORTO_FINANZIATO';
+  return normalized;
 }
 
 function isPresentCell(value: unknown) {
@@ -317,14 +338,14 @@ function pick(row: SourceRow, keys: string[], fallback = '') {
 
   const normalizedEntries = new Map<string, unknown>();
   Object.entries(row).forEach(([header, value]) => {
-    const normalized = normalizeHeaderKey(header);
+    const normalized = canonicalHeaderKey(header);
     if (normalized && !normalizedEntries.has(normalized)) {
       normalizedEntries.set(normalized, value);
     }
   });
 
   for (const key of keys) {
-    const value = normalizedEntries.get(normalizeHeaderKey(key));
+    const value = normalizedEntries.get(canonicalHeaderKey(key));
     if (isPresentCell(value)) return value as string;
   }
 
@@ -1052,8 +1073,8 @@ async function readWorkbookFile(file: File): Promise<WorkbookImport> {
             defval: '',
             raw: true,
           }) as unknown[][];
-          matrix.slice(0, 100).forEach((candidate, headerRow) => {
-            const headers = new Set(candidate.map((cell) => normalizeHeaderKey(String(cell ?? ''))));
+          matrix.slice(0, 1000).forEach((candidate, headerRow) => {
+            const headers = new Set(candidate.map(canonicalHeaderKey));
             const hasDate = headers.has('DATA_LIQUIDAZIONE') || headers.has('DATA_CARICAMENTO');
             const hasAmount = headers.has('IMPORTO_FINANZIATO') || headers.has('IMPORTO_NETTO_EROGATO');
             if (!hasDate || !hasAmount) return;

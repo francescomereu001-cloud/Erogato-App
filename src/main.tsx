@@ -299,10 +299,31 @@ async function saveRemoteSettings(settings: Settings, updatedAt: string) {
 function normalizeHeaderKey(key: string) {
   return key
     .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
-    .replace(/[\s.-]+/g, '_')
+    .replace(/[^A-Z0-9]+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+const HEADER_ALIASES: Record<string, string[]> = {
+  DATA_LIQUIDAZIONE: ['DATA_LIQ', 'DATA_LIQUID', 'DT_LIQUIDAZIONE', 'DATA_EROGAZIONE', 'DT_EROGAZIONE', 'DATA_EROGATO'],
+  DATA_CARICAMENTO: ['DATA_CARIC', 'DT_CARICAMENTO', 'DATA_INSERIMENTO', 'DT_INSERIMENTO'],
+  IMPORTO_FINANZIATO: ['IMPORTO_FINANZ', 'IMP_FINANZIATO', 'IMP_FINANZ', 'CAPITALE_FINANZIATO', 'IMPORTO_EROGATO', 'LORDO_EROGATO', 'EROGATO'],
+  IMPORTO_NETTO_EROGATO: ['IMPORTO_NETTO', 'NETTO_EROGATO', 'NETTO_LIQUIDATO'],
+};
+
+function canonicalHeaderKey(value: unknown) {
+  const normalized = normalizeHeaderKey(String(value ?? ''));
+  for (const [canonical, aliases] of Object.entries(HEADER_ALIASES)) {
+    if (normalized === canonical || aliases.includes(normalized)) return canonical;
+  }
+  if (/^(?:DATA|DT).*(?:LIQUID|EROGAZ)/.test(normalized)) return 'DATA_LIQUIDAZIONE';
+  if (/^(?:DATA|DT).*(?:CARIC|INSER)/.test(normalized)) return 'DATA_CARICAMENTO';
+  if (/(?:NETTO).*(?:EROGAT|LIQUID)|(?:EROGAT|LIQUID).*(?:NETTO)/.test(normalized)) return 'IMPORTO_NETTO_EROGATO';
+  if (/(?:IMPORTO|IMP|CAPITALE).*(?:FINANZ|EROGAT)/.test(normalized)) return 'IMPORTO_FINANZIATO';
+  return normalized;
 }
 
 function isPresentCell(value: unknown) {
@@ -317,14 +338,14 @@ function pick(row: SourceRow, keys: string[], fallback = '') {
 
   const normalizedEntries = new Map<string, unknown>();
   Object.entries(row).forEach(([header, value]) => {
-    const normalized = normalizeHeaderKey(header);
+    const normalized = canonicalHeaderKey(header);
     if (normalized && !normalizedEntries.has(normalized)) {
       normalizedEntries.set(normalized, value);
     }
   });
 
   for (const key of keys) {
-    const value = normalizedEntries.get(normalizeHeaderKey(key));
+    const value = normalizedEntries.get(canonicalHeaderKey(key));
     if (isPresentCell(value)) return value as string;
   }
 
@@ -1034,23 +1055,57 @@ function parsePolicyMonthlyFromWorkbook(workbook: XLSX.WorkBook, year: number): 
 }
 
 async function readWorkbookFile(file: File): Promise<WorkbookImport> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
-      const data = new Uint8Array(e.target?.result as ArrayBuffer);
-      const workbook = XLSX.read(data, { type: 'array', cellDates: true, raw: true });
-      const databaseSheetName = workbook.SheetNames.find((name) => name.toUpperCase().includes('DATABASE')) || workbook.SheetNames[0];
-      const sheet = workbook.Sheets[databaseSheetName];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: true }) as SourceRow[];
-      const year = detectWorkbookYear(rows, file.name);
-      resolve({
-        fileName: file.name,
-        rows,
-        databaseSheetName,
-        productMonthly: parseProductMonthlyFromWorkbook(workbook, year),
-        policyMonthly: parsePolicyMonthlyFromWorkbook(workbook, year),
-      });
+      try {
+        if (!(e.target?.result instanceof ArrayBuffer)) throw new Error('Il browser non ha restituito il contenuto del file.');
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true, raw: true });
+        if (!workbook.SheetNames.length) throw new Error('Il file Excel non contiene fogli leggibili.');
+
+        // Some exports put a title, filters, or blank rows before the real header.
+        // Locate the sheet/header from its required fields instead of assuming row 1.
+        let selected: { sheetName: string; headerRow: number; score: number } | null = null;
+        for (const sheetName of workbook.SheetNames) {
+          const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+            header: 1,
+            defval: '',
+            raw: true,
+          }) as unknown[][];
+          matrix.slice(0, 1000).forEach((candidate, headerRow) => {
+            const headers = new Set(candidate.map(canonicalHeaderKey));
+            const hasDate = headers.has('DATA_LIQUIDAZIONE') || headers.has('DATA_CARICAMENTO');
+            const hasAmount = headers.has('IMPORTO_FINANZIATO') || headers.has('IMPORTO_NETTO_EROGATO');
+            if (!hasDate || !hasAmount) return;
+            const score = candidate.filter((cell) => normalizeHeaderKey(String(cell ?? ''))).length
+              + (sheetName.toUpperCase().includes('DATABASE') ? 1000 : 0);
+            if (!selected || score > selected.score) selected = { sheetName, headerRow, score };
+          });
+        }
+
+        if (!selected) {
+          throw new Error('Tracciato Excel non riconosciuto: non trovo le colonne DATA_LIQUIDAZIONE (o DATA_CARICAMENTO) e IMPORTO_FINANZIATO.');
+        }
+
+        const { sheetName: databaseSheetName, headerRow } = selected;
+        const sheet = workbook.Sheets[databaseSheetName];
+        const rows = XLSX.utils.sheet_to_json(sheet, { range: headerRow, defval: '', raw: true }) as SourceRow[];
+        if (!rows.length) throw new Error(`Il foglio "${databaseSheetName}" non contiene righe dati.`);
+        const year = detectWorkbookYear(rows, file.name);
+        resolve({
+          fileName: file.name,
+          rows,
+          databaseSheetName,
+          productMonthly: parseProductMonthlyFromWorkbook(workbook, year),
+          policyMonthly: parsePolicyMonthlyFromWorkbook(workbook, year),
+        });
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('Impossibile leggere il file Excel.'));
+      }
     };
+    reader.onerror = () => reject(new Error('Errore di lettura del file Excel. Riprova a selezionarlo.'));
+    reader.onabort = () => reject(new Error('Lettura del file Excel annullata.'));
     reader.readAsArrayBuffer(file);
   });
 }
@@ -2314,6 +2369,9 @@ useEffect(() => {
     const dedupedImportedRows = Array.from(
       new Map(importedRows.map((row) => [row.stableIdentity, row])).values()
     );
+    if (!dedupedImportedRows.length) {
+      throw new Error('Nessuna riga valida trovata: controlla che data e importo finanziato siano valorizzati.');
+    }
 
     const payloadMap = new Map<string, {
       unique_key: string;
@@ -2407,7 +2465,6 @@ useEffect(() => {
       if (!response.ok) {
         const message = result?.error || result?.details || `HTTP ${response.status}`;
         console.error('Errore API upsert-pratiche:', result || message, chunk);
-        window.alert(`Errore nel salvataggio su Supabase: ${message}`);
         throw new Error(message);
       }
     }
@@ -2419,9 +2476,8 @@ useEffect(() => {
     setDataSourceMode('supabase');
   } catch (error) {
     console.error('Errore upload Excel:', error);
-    if (error instanceof Error && !String(error.message).includes('Errore nel salvataggio su Supabase')) {
-      window.alert(`Errore nel salvataggio su Supabase: ${error.message || 'errore sconosciuto'}`);
-    }
+    const message = error instanceof Error ? error.message : 'errore sconosciuto';
+    window.alert(`Importazione non completata: ${message}`);
   } finally {
     setUploading(false);
   }
@@ -2441,6 +2497,9 @@ useEffect(() => {
     await yieldToBrowser();
     const normalizedRows = normalizeImportedRows(parsed.rows, parsed.fileName);
     const dedupedRows = Array.from(new Map(normalizedRows.map((row) => [row.stableIdentity, row])).values());
+    if (!dedupedRows.length) {
+      throw new Error('Nessuna riga valida trovata: controlla che data e importo finanziato siano valorizzati.');
+    }
     const summary = buildSimulationSummary(parsed.fileName, parsed.rows.length, dedupedRows);
     setSimulationPendingRows(dedupedRows);
     setSimulationPendingSummary(summary);
@@ -2726,7 +2785,7 @@ useEffect(() => {
             </div>
             <div className="hero-actions">
               <div className="desktop-actions">
-                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
+                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onClick={(e) => { e.currentTarget.value = ''; }} onChange={(e) => handleFiles(e.target.files)} /></label>
                 <button className="action-button" onClick={exportBackup}><Download className="icon" />Backup</button>
                 <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importBackup(file); }} /></label>
                 <button className="action-button danger" onClick={clearArchive}><Trash2 className="icon" />Azzera archivio</button>
@@ -2735,7 +2794,7 @@ useEffect(() => {
                 <button className="action-button primary" onClick={() => setActionsOpen((v) => !v)}><Menu className="icon" />Azioni</button>
                 {actionsOpen && (
                   <div className="actions-popover">
-                    <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => {handleFiles(e.target.files); setActionsOpen(false);}} /></label>
+                    <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onClick={(e) => { e.currentTarget.value = ''; }} onChange={(e) => {handleFiles(e.target.files); setActionsOpen(false);}} /></label>
                     <button className="action-button" onClick={() => { exportBackup(); setActionsOpen(false); }}><Download className="icon" />Backup</button>
                     <label className="action-button"><RefreshCw className="icon" /><span>Importa backup</span><input type="file" accept=".json" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) { importBackup(file); setActionsOpen(false);} }} /></label>
                     <button className="action-button danger" onClick={() => { clearArchive(); setActionsOpen(false); }}><Trash2 className="icon" />Azzera archivio</button>
@@ -3482,12 +3541,12 @@ useEffect(() => {
               <div className="panel import-panel-real">
                 <div className="panel-header"><h3>A) Import dati reali</h3><span>Salva su Supabase</span></div>
                 <p className="muted">Usa questo flusso solo per il tuo erogato reale. Il file viene normalizzato e salvato nella tabella Supabase <strong>pratiche</strong>.</p>
-                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onChange={(e) => handleFiles(e.target.files)} /></label>
+                <label className="action-button primary"><Upload className="icon" /><span>{uploading ? 'Importazione...' : 'Import dati reali'}</span><input type="file" accept=".xlsx,.xlsm,.xls" multiple hidden onClick={(e) => { e.currentTarget.value = ''; }} onChange={(e) => handleFiles(e.target.files)} /></label>
               </div>
               <div className="panel simulation-panel">
                 <div className="panel-header"><h3>B) Simulazione temporanea</h3><span>Solo browser, zero Supabase</span></div>
                 <p className="muted">Questa funzione permette di caricare temporaneamente un file erogato, ad esempio il totale agenzia, senza modificare Supabase. I dati spariscono quando esci dalla simulazione o aggiorni la pagina.</p>
-                <label className="action-button"><Upload className="icon" /><span>{simulationLoading ? 'Analisi file...' : 'Carica file solo per simulazione'}</span><input type="file" accept=".xlsx,.xlsm,.xls" hidden onChange={(e) => handleSimulationFile(e.target.files)} /></label>
+                <label className="action-button"><Upload className="icon" /><span>{simulationLoading ? 'Analisi file...' : 'Carica file solo per simulazione'}</span><input type="file" accept=".xlsx,.xlsm,.xls" hidden onClick={(e) => { e.currentTarget.value = ''; }} onChange={(e) => handleSimulationFile(e.target.files)} /></label>
                 {simulationError ? <div className="simulation-warning"><TriangleAlert className="icon" />{simulationError}</div> : null}
                 {simulationPendingSummary ? (
                   <div className="simulation-preview stack">

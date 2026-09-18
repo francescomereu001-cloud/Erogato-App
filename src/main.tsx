@@ -50,6 +50,7 @@ import './styles.css';
 import { diffPct, euro, euro0, num, pct } from './utils/formatters';
 import { cleanNumber, getProductFamilyFromCode, normalizeMonthLabel, normalizeProductLabel, normalizeText, safeUpper } from './utils/normalizers';
 import { buildDealerReportHtml } from './utils/dealerReport';
+import { buildDealerTrends, type AnalysisContext } from './domain/dealerTrend';
 import { supabase } from "./supabase";
 type SourceRow = Record<string, unknown>;
 
@@ -1116,7 +1117,8 @@ function normalizeImportedRows(rows: SourceRow[], fileName: string): AppRow[] {
     .map((row) => {
       const liquidationDate = excelDateToDate(pick(row, ['DATA_LIQUIDAZIONE']));
       const loadingDate = excelDateToDate(pick(row, ['DATA_CARICAMENTO']));
-      const referenceDate = liquidationDate || loadingDate;
+      // A loading timestamp is not evidence that the practice was liquidated.
+      const referenceDate = liquidationDate;
       const amount = cleanNumber(pick(row, ['IMPORTO_FINANZIATO']));
       const netAmount = cleanNumber(pick(row, ['IMPORTO_NETTO_EROGATO']));
       const prodottoCode = normalizeText(pick(row, ['PRODOTTO']));
@@ -2222,11 +2224,12 @@ useEffect(() => {
     return { erogato, pratiche, ticketMedio: pratiche ? erogato / pratiche : 0, provvigioni, polizze, dealerCount };
   }, [filteredRows, dealerFilter, subagenteFilter, productFilter, search, policyTotalsForYear, dealerPolicyTotals]);
 
-  const referenceMonth = useMemo(() => {
-    const byYear = filteredRows.filter((row) => row.year === currentYear);
-    if (!byYear.length) return new Date().getMonth() + 1;
-    return Math.max(...byYear.map((row) => row.month));
-  }, [filteredRows, currentYear]);
+  // Observation date belongs to the acquired portfolio, never to the selected dealer.
+  const portfolioAsOf = useMemo(() => {
+    const dates = activeRows.map((row) => row.dataLiquidazione?.slice(0, 10) || '').filter(Boolean).sort();
+    return dates[dates.length - 1] || `${currentYear}-01-01`;
+  }, [activeRows, currentYear]);
+  const referenceMonth = Number(portfolioAsOf.slice(0, 4)) === currentYear ? Number(portfolioAsOf.slice(5, 7)) : 1;
 
   const smartDealerTable = useMemo(() => {
     const data = buildSmartDealerRows(filteredRows, currentYear, referenceMonth);
@@ -2315,7 +2318,37 @@ useEffect(() => {
 
     return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, prevYearRows, last12Rows, sum, count, ticket, avgRates, rateCoverage };
   }, [selectedDealerDetail, filteredRowsAllYears, currentYear]);
-  const dealerAlerts = useMemo(() => buildDealerAlerts(smartDealerTable), [smartDealerTable]);
+  const dealerTrendRows = useMemo(() => {
+    // Free-text client search must not turn a subset into a dealer-wide judgement.
+    if (search) return [];
+    const economicScope = activeRows.filter((row) => (subagenteFilter === 'ALL' || row.subagente === subagenteFilter)
+      && (productFilter === 'ALL' || row.prodottoCode === productFilter)
+      && (dealerFilter === 'ALL' || row.dealer === dealerFilter));
+    const dates = economicScope.map(row => row.dataLiquidazione?.slice(0, 10) || '').filter(Boolean).sort();
+    if (!dates.length) return [];
+    const month = `${currentYear}-${String(referenceMonth).padStart(2, '0')}`;
+    const ctx: AnalysisContext = {
+      month, dataAsOf: portfolioAsOf, monthState: portfolioAsOf.slice(0, 7) === month ? 'open' : 'closed',
+      coverage: [{ from: dates[0].slice(0, 7) + '-01', to: portfolioAsOf, source: simulationMode ? 'simulazione' : 'archivio legacy', status: 'inferred' }],
+      qualityIssues: simulationMode ? [] : ['Copertura legacy non confermata: verificare il cutoff in Dati / Impostazioni.'],
+    };
+    return buildDealerTrends(economicScope.map(row => ({
+      id: row.rowId,
+      dealerId: row.dealerCode ? `${row.puntoVendita ? 'PV' : 'CONV'}:${row.dealerCode}` : `MISSING:${row.subagenteCode || row.subagente}:${row.dealer}:${row.rowId}`,
+      dealerLabel: row.dealer,
+      liquidationDate: row.dataLiquidazione,
+      importoFinanziato: row.importoFinanziato,
+    })), ctx);
+  }, [activeRows, currentYear, referenceMonth, portfolioAsOf, simulationMode, search, dealerFilter, subagenteFilter, productFilter]);
+  const dealerAlerts = useMemo<DealerAlert[]>(() => dealerTrendRows.map(result => ({
+    key: result.key,
+    dealer: result.dealerLabel,
+    tipo: result.title,
+    severity: result.priority === 'high' ? 'alta' : result.state.includes('growth') ? 'positiva' : result.priority === 'monitor' ? 'media' : 'bassa',
+    descrizione: `${result.explanation} Copertura ${result.coverageStatus} al ${result.asOf}; benchmark: ${result.benchmarkMonths.join(', ') || 'non disponibile'}.`,
+    dato: result.deltaPct === null ? `Δ ${euro(result.deltaEuro || 0)} (percentuale n/d)` : `${pct(result.deltaPct)} (${euro(result.deltaEuro || 0)})`,
+    suggerimento: result.cautions.length ? result.cautions.join(' ') : 'Verificare con il dealer senza inferire cause dai soli dati di liquidazione.',
+  })), [dealerTrendRows]);
   const trendWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(activeRows, {
     year: trendYear,
     month: trendMonthLimit,
@@ -2366,9 +2399,9 @@ useEffect(() => {
       fileNames.push(parsed.fileName);
     }
 
-    const dedupedImportedRows = Array.from(
-      new Map(importedRows.map((row) => [row.stableIdentity, row])).values()
-    );
+    // Occurrence is part of rowId: two genuinely distinct practices with equal
+    // dealer/date/amount must survive, while repeating the same file is idempotent.
+    const dedupedImportedRows = Array.from(new Map(importedRows.map((row) => [row.rowId, row])).values());
     if (!dedupedImportedRows.length) {
       throw new Error('Nessuna riga valida trovata: controlla che data e importo finanziato siano valorizzati.');
     }
@@ -2408,14 +2441,12 @@ useEffect(() => {
     }>();
 
     for (const row of dedupedImportedRows) {
-      const uniqueKey = String(row.stableIdentity || '').trim();
+      const uniqueKey = String(row.rowId || row.stableIdentity || '').trim();
       if (!uniqueKey) continue;
 
       payloadMap.set(uniqueKey, {
         unique_key: uniqueKey,
-        data_liquidazione: row.dateISO
-          ? new Date(row.dateISO).toISOString().slice(0, 10)
-          : null,
+        data_liquidazione: row.dataLiquidazione ? row.dataLiquidazione.slice(0, 10) : null,
         importo_finanziato: Number(row.importoFinanziato || 0),
         prodotto: Number.isFinite(Number(row.prodottoCode)) ? Number(row.prodottoCode) : null,
         dealer: row.dealer || '',
@@ -3370,6 +3401,7 @@ useEffect(() => {
         )}
         {tab === 'alerts' && (
           <div className="stack">
+            {search ? <div className="simulation-warning"><TriangleAlert className="icon" />Alert dealer sospesi: la ricerca cliente rappresenta un sottoinsieme e non può descrivere l’intero dealer.</div> : null}
             {(['alta', 'media', 'bassa', 'positiva'] as AlertSeverity[]).map((sev) => (
               <div className="panel" key={sev}>
                 <div className="panel-header"><h3>Alert {sev}</h3><span>{alertsBySeverity[sev].length} elementi</span></div>
@@ -3378,7 +3410,7 @@ useEffect(() => {
                     <div key={a.key} className="list-item">
                       <div>
                         <div className="list-title">{sev === 'alta' ? <ShieldAlert className="inline-icon" /> : sev === 'positiva' ? <CircleCheck className="inline-icon" /> : <TriangleAlert className="inline-icon" />} {a.dealer} · {a.tipo}</div>
-                        <div className="list-subtitle">{a.descrizione} · {a.dato}</div>
+                        <div className="list-subtitle"><strong>Perché questo alert?</strong> {a.descrizione} · {a.dato}</div>
                       </div>
                       <div className="badge">{a.suggerimento}</div>
                     </div>

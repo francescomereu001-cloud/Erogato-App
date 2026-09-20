@@ -736,6 +736,10 @@ thead{background:linear-gradient(180deg,#f8fafc,#f3f6fa)}
   background:linear-gradient(180deg,#edf3ff,#e4edff);
   color:#1e54c5;
 }
+.active-filter-summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.filter-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid #b9ccf5;background:#eef4ff;color:#1e54c5;border-radius:999px;padding:6px 10px;font:inherit;font-size:12px;cursor:pointer}
+.filter-chip svg{width:13px;height:13px}
+.filter-chip:focus-visible,.pill:focus-visible,.select:focus-visible,.action-button:focus-visible{outline:3px solid rgba(36,89,211,.35);outline-offset:2px}
 @media(max-width:768px){
   .kpi-card:hover{transform:none}
   .topbar{background:#fff}

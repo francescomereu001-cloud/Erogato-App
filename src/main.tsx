@@ -53,6 +53,16 @@ import { cleanNumber, getProductFamilyFromCode, normalizeMonthLabel, normalizePr
 import { buildDealerReportHtml } from './utils/dealerReport';
 import { buildDealerTrends, type AnalysisContext } from './domain/dealerTrend';
 import { buildManagedDealerScope, type DealerScopeRow } from './domain/dealerScope';
+import {
+  ALL,
+  activeFilterLabels,
+  dealerIdentity,
+  defaultAnalysisFilters,
+  selectCurrentRows,
+  selectHistoricalRows,
+  sourceDataAsOf,
+  type AnalysisFilters,
+} from './domain/analyticsContext';
 import { supabase } from "./supabase";
 type SourceRow = Record<string, unknown>;
 
@@ -1635,14 +1645,23 @@ function App() {
   const settingsUpdatedAtRef = useRef(initialSettingsBundle.current.updatedAt);
   const settingsHydratedRef = useRef(false);
   const [tab, setTab] = useState<'executive' | 'trend' | 'focus' | 'forecast' | 'intelligence' | 'alerts' | 'products' | 'subagenti' | 'portfolio' | 'data'>('executive');
-  const [search, setSearch] = useState('');
-  const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
-  const [dealerFilter, setDealerFilter] = useState('ALL');
-  const [subagenteFilter, setSubagenteFilter] = useState('ALL');
-  const [productFilter, setProductFilter] = useState('ALL');
+  const realCurrentYear = new Date().getFullYear();
+  const [analysisFilters, setAnalysisFilters] = useState<AnalysisFilters>(() => defaultAnalysisFilters(realCurrentYear));
+  const updateFilters = (patch: Partial<AnalysisFilters>) => setAnalysisFilters((previous) => ({ ...previous, ...patch }));
+  const search = analysisFilters.search;
+  const yearFilter = String(analysisFilters.period.year);
+  const dealerFilter = analysisFilters.dealerId;
+  const subagenteFilter = analysisFilters.branch;
+  const productFilter = analysisFilters.product;
+  const viewGranularity = analysisFilters.grouping;
+  const setSearch = (value: string) => updateFilters({ search: value });
+  const setYearFilter = (value: string) => { setAnalysisFilters((previous) => ({ ...previous, period: { mode: 'year', year: Number(value) } })); setTrendMonthLimit(12); setTrendPeriodMode('ytd'); };
+  const setDealerFilter = (value: string) => updateFilters({ dealerId: value });
+  const setSubagenteFilter = (value: string) => updateFilters({ branch: value });
+  const setProductFilter = (value: string) => updateFilters({ product: value });
+  const setViewGranularity = (value: ViewGranularity) => updateFilters({ grouping: value });
   const [uploading, setUploading] = useState(false);
   const [dataSourceMode, setDataSourceMode] = useState<DataSourceMode>('empty');
-  const [viewGranularity, setViewGranularity] = useState<ViewGranularity>('monthly');
   const [selectedPeriodKey, setSelectedPeriodKey] = useState('');
   const [dealerSortKey, setDealerSortKey] = useState<DealerSortKey>('erogato');
   const [selectedDealerDetail, setSelectedDealerDetail] = useState<string | null>(null);
@@ -1653,12 +1672,8 @@ function App() {
   const [branchMonthFilter, setBranchMonthFilter] = useState('ALL');
   const [branchMacroFilter, setBranchMacroFilter] = useState<BranchMacroFilter>('ALL');
   const [dealerWeightView, setDealerWeightView] = useState<'totale' | 'auto' | 'pos'>('totale');
-  const [trendYear, setTrendYear] = useState(Number(new Date().getFullYear()));
-  const [trendMonthLimit, setTrendMonthLimit] = useState(new Date().getMonth() + 1);
+  const [trendMonthLimit, setTrendMonthLimit] = useState(12);
   const [trendPeriodMode, setTrendPeriodMode] = useState<TrendPeriodMode>('ytd');
-  const [trendMacroProduct, setTrendMacroProduct] = useState<TrendMacroFilter>('ALL');
-  const [trendBranch, setTrendBranch] = useState('ALL');
-  const [trendDealer, setTrendDealer] = useState('ALL');
   const [simulationMode, setSimulationMode] = useState(false);
   const [simulationRows, setSimulationRows] = useState<AppRow[]>([]);
   const [simulationFileName, setSimulationFileName] = useState('');
@@ -1689,20 +1704,16 @@ function App() {
   ];
 
   const resetFilters = () => {
-    setSearch('');
-    setYearFilter(String(new Date().getFullYear()));
-    setDealerFilter('ALL');
-    setSubagenteFilter('ALL');
-    setProductFilter('ALL');
-    setViewGranularity('monthly');
+    setAnalysisFilters({ ...defaultAnalysisFilters(realCurrentYear), source: simulationMode ? 'simulation' : 'real' });
+    setSelectedPeriodKey('');
+    setSelectedDealerDetail(null);
+    setPortfolioMonthFilter('');
+    setDealerSortKey('erogato');
+    setDealerWeightView('totale');
     setBranchMonthFilter('ALL');
     setBranchMacroFilter('ALL');
-    setTrendYear(new Date().getFullYear());
-    setTrendMonthLimit(new Date().getMonth() + 1);
+    setTrendMonthLimit(12);
     setTrendPeriodMode('ytd');
-    setTrendMacroProduct('ALL');
-    setTrendBranch('ALL');
-    setTrendDealer('ALL');
   };
 
 useEffect(() => {
@@ -1896,36 +1907,44 @@ useEffect(() => {
   }, [rows, importedFiles, productMonthlyMetrics, policyMonthlyMetrics, settings]);
 
   const activeRows = simulationMode ? simulationRows : rows;
+  const currentYear = analysisFilters.period.year;
+  const managedDealerScope = useMemo(() => buildManagedDealerScope(activeRows.map(toDealerScopeRow), currentYear), [activeRows, currentYear]);
+  const managedIds = useMemo(() => new Set(managedDealerScope.dealers.map((dealer) => dealer.id)), [managedDealerScope]);
+  const managedRows = useMemo(() => activeRows.filter((row) => {
+    const id = managedDealerScope.dealerIdForRow(toDealerScopeRow(row));
+    return Boolean(id && managedIds.has(id));
+  }), [activeRows, managedDealerScope, managedIds]);
+  const trendYear = currentYear;
+  const trendBranch = subagenteFilter;
+  const trendDealer = dealerFilter;
+  const trendMacroProduct = analysisFilters.macroProduct;
+  const setTrendYear = (year: number) => setAnalysisFilters((previous) => ({ ...previous, period: { ...previous.period, year } }));
+  const setTrendBranch = setSubagenteFilter;
+  const setTrendDealer = setDealerFilter;
+  const setTrendMacroProduct = (macroProduct: TrendMacroFilter) => updateFilters({ macroProduct });
 
   const availableYears = useMemo(() => {
-    const values = Array.from(new Set([...activeRows.map((row) => row.year), ...productMonthlyMetrics.map((m) => m.year), ...policyMonthlyMetrics.map((m) => m.year)])).sort((a, b) => a - b);
-    return values.length ? values : [new Date().getFullYear()];
-  }, [activeRows, productMonthlyMetrics, policyMonthlyMetrics]);
+    const aggregateYears = simulationMode ? [] : [...productMonthlyMetrics.map((m) => m.year), ...policyMonthlyMetrics.map((m) => m.year)];
+    return Array.from(new Set([...managedRows.map((row) => row.year), ...aggregateYears])).filter(Boolean).sort((a, b) => a - b);
+  }, [managedRows, productMonthlyMetrics, policyMonthlyMetrics, simulationMode]);
 
-  useEffect(() => {
-    if (!availableYears.includes(Number(yearFilter))) setYearFilter(String(availableYears[availableYears.length - 1]));
-  }, [availableYears, yearFilter]);
-
-  useEffect(() => {
-    if (!availableYears.includes(trendYear)) setTrendYear(availableYears[availableYears.length - 1]);
-  }, [availableYears, trendYear]);
-
-  const trendBranches = useMemo(() => ['ALL', ...Array.from(new Set(activeRows.map((row) => row.subagente).filter(Boolean))).sort()], [activeRows]);
-  const trendDealers = useMemo(() => ['ALL', ...Array.from(new Set(activeRows.map((row) => row.dealer).filter(Boolean))).sort()], [activeRows]);
+  const trendBranches = useMemo(() => ['ALL', ...Array.from(new Set(managedRows.map((row) => row.subagente).filter(Boolean))).sort()], [managedRows]);
+  const trendDealers = useMemo(() => [{ id: ALL, label: 'Tutti i dealer' }, ...managedDealerScope.dealers.map(({ id, label }) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label))], [managedDealerScope]);
+  const trendContextRows = useMemo(() => selectHistoricalRows(managedRows, analysisFilters), [managedRows, analysisFilters]);
   const trendFilters = useMemo<TrendFilters>(() => ({
     year: trendYear,
     monthLimit: trendMonthLimit,
     periodMode: trendPeriodMode,
-    macroProduct: trendMacroProduct,
-    branch: trendBranch,
-    dealer: trendDealer,
-  }), [trendYear, trendMonthLimit, trendPeriodMode, trendMacroProduct, trendBranch, trendDealer]);
-  const trendComparison = useMemo(() => buildYtdTrendComparison(activeRows, trendFilters), [activeRows, trendFilters]);
-  const trendMonthlySeries = useMemo(() => buildMonthlyYoYSeries(activeRows, trendFilters), [activeRows, trendFilters]);
-  const trendBranchTable = useMemo(() => buildBranchTrendTable(activeRows, trendFilters), [activeRows, trendFilters]);
-  const trendMacroMixTable = useMemo(() => buildBranchMacroMixTable(activeRows, trendFilters), [activeRows, trendFilters]);
-  const trendVariationCauses = useMemo(() => buildTrendVariationCauses(activeRows, trendFilters), [activeRows, trendFilters]);
-  const trendAlerts = useMemo(() => buildTrendAlerts(activeRows, trendFilters, trendBranchTable), [activeRows, trendFilters, trendBranchTable]);
+    macroProduct: 'ALL',
+    branch: 'ALL',
+    dealer: 'ALL',
+  }), [trendYear, trendMonthLimit, trendPeriodMode]);
+  const trendComparison = useMemo(() => buildYtdTrendComparison(trendContextRows, trendFilters), [trendContextRows, trendFilters]);
+  const trendMonthlySeries = useMemo(() => buildMonthlyYoYSeries(trendContextRows, trendFilters), [trendContextRows, trendFilters]);
+  const trendBranchTable = useMemo(() => buildBranchTrendTable(trendContextRows, trendFilters), [trendContextRows, trendFilters]);
+  const trendMacroMixTable = useMemo(() => buildBranchMacroMixTable(trendContextRows, trendFilters), [trendContextRows, trendFilters]);
+  const trendVariationCauses = useMemo(() => buildTrendVariationCauses(trendContextRows, trendFilters), [trendContextRows, trendFilters]);
+  const trendAlerts = useMemo(() => buildTrendAlerts(trendContextRows, trendFilters, trendBranchTable), [trendContextRows, trendFilters, trendBranchTable]);
   const trendPeriodLabel = trendPeriodMode === 'ytd' ? `YTD fino a ${MONTHS_IT[trendMonthLimit - 1]}` : `Solo ${MONTHS_IT[trendMonthLimit - 1]}`;
   const formatTrendPct = (value: number | null) => value === null ? 'n.d.' : pct(value);
 
@@ -1944,35 +1963,31 @@ useEffect(() => {
     </div>
   );
 
-  const currentYear = Number(yearFilter);
-  const yearRows = useMemo(() => activeRows.filter((row) => row.year === currentYear), [activeRows, currentYear]);
-  const dealers = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.dealer))).sort()], [yearRows]);
-  const subagenti = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.subagente))).sort()], [yearRows]);
-  const products = useMemo(() => ['ALL', ...Array.from(new Set(yearRows.map((row) => row.prodottoCode))).sort()], [yearRows]);
+  const dimensionRows = useMemo(() => managedRows.filter((row) => {
+    const branchOk = subagenteFilter === ALL || row.subagente === subagenteFilter;
+    const productOk = productFilter === ALL || row.prodottoCode === productFilter;
+    return branchOk && productOk;
+  }), [managedRows, subagenteFilter, productFilter]);
+  const dealers = useMemo(() => {
+    const compatible = new Set(dimensionRows.map((row) => dealerIdentity(row)));
+    return [{ id: ALL, label: 'Tutti i dealer' }, ...managedDealerScope.dealers.filter((dealer) => compatible.has(dealer.id) || dealerFilter === dealer.id).map(({ id, label }) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label))];
+  }, [dimensionRows, managedDealerScope, dealerFilter]);
+  const subagenti = useMemo(() => [ALL, ...Array.from(new Set(managedRows.filter(row => dealerFilter === ALL || dealerIdentity(row) === dealerFilter).map((row) => row.subagente))).sort()], [managedRows, dealerFilter]);
+  const products = useMemo(() => [ALL, ...Array.from(new Set(managedRows.filter(row => dealerFilter === ALL || dealerIdentity(row) === dealerFilter).map((row) => row.prodottoCode))).sort()], [managedRows, dealerFilter]);
 
-  const filteredRows = useMemo(() => {
-    return activeRows.filter((row) => {
-      const yearOk = row.year === currentYear;
-      const dealerOk = dealerFilter === 'ALL' || row.dealer === dealerFilter;
-      const subagenteOk = subagenteFilter === 'ALL' || row.subagente === subagenteFilter;
-      const productOk = productFilter === 'ALL' || row.prodottoCode === productFilter;
-      const searchPool = [row.dealer, row.subagente, row.cliente, row.localita, row.codiceFiscale, row.tabella].join(' ').toLowerCase();
-      const searchOk = !search || searchPool.includes(search.toLowerCase());
-      return yearOk && dealerOk && subagenteOk && productOk && searchOk;
-    });
-  }, [activeRows, currentYear, dealerFilter, subagenteFilter, productFilter, search]);
-  const filteredRowsAllYears = useMemo(() => {
-    return activeRows.filter((row) => {
-      const dealerOk = dealerFilter === 'ALL' || row.dealer === dealerFilter;
-      const subagenteOk = subagenteFilter === 'ALL' || row.subagente === subagenteFilter;
-      const productOk = productFilter === 'ALL' || row.prodottoCode === productFilter;
-      const searchPool = [row.dealer, row.subagente, row.cliente, row.localita, row.codiceFiscale, row.tabella].join(' ').toLowerCase();
-      const searchOk = !search || searchPool.includes(search.toLowerCase());
-      return dealerOk && subagenteOk && productOk && searchOk;
-    });
-  }, [activeRows, dealerFilter, subagenteFilter, productFilter, search]);
+  const filteredRows = useMemo(() => selectCurrentRows(managedRows, analysisFilters), [managedRows, analysisFilters]);
+  const filteredRowsAllYears = useMemo(() => selectHistoricalRows(managedRows, analysisFilters), [managedRows, analysisFilters]);
 
   const hasExtraFilters = dealerFilter !== 'ALL' || subagenteFilter !== 'ALL' || productFilter !== 'ALL' || Boolean(search);
+  const filterLabels = useMemo(() => activeFilterLabels(analysisFilters), [analysisFilters]);
+  const removeFilter = (key: (typeof filterLabels)[number]['key']) => {
+    if (key === 'period') setAnalysisFilters((previous) => ({ ...previous, period: { mode: 'year', year: realCurrentYear } }));
+    else if (key === 'dealerId') updateFilters({ dealerId: ALL });
+    else if (key === 'branch') updateFilters({ branch: ALL });
+    else if (key === 'product') updateFilters({ product: ALL });
+    else if (key === 'macroProduct') updateFilters({ macroProduct: ALL });
+    else if (key === 'search') updateFilters({ search: '' });
+  };
   const monthlyData = useMemo(() => monthSeriesFromRows(filteredRows, currentYear), [filteredRows, currentYear]);
   const timeSeriesData = useMemo(() => timeSeriesFromRows(filteredRows, currentYear, viewGranularity), [filteredRows, currentYear, viewGranularity]);
   const periodOptions = useMemo(() => {
@@ -2090,26 +2105,28 @@ useEffect(() => {
   const subagenteTable = useMemo(() => aggregateByField(branchFilteredRows, currentYear, 'subagente'), [branchFilteredRows, currentYear]);
   const mix = useMemo(() => productMix(filteredRows, currentYear), [filteredRows, currentYear]);
   const forecastEvaluation = useMemo(() => {
-    const latestRowDate = filteredRows
-      .filter((row) => row.year === currentYear && row.dateISO)
-      .map((row) => new Date(row.dateISO!))
-      .filter((date) => !Number.isNaN(date.getTime()))
-      .sort((a, b) => b.getTime() - a.getTime())[0] || null;
+    const sourceDate = sourceDataAsOf(managedRows.filter((row) => row.year === currentYear));
+    const latestRowDate = sourceDate ? new Date(`${sourceDate}T12:00:00`) : null;
     return {
-      referenceDate: latestRowDate || new Date(),
-      referenceMonth: latestRowDate ? latestRowDate.getMonth() + 1 : new Date().getMonth() + 1,
-      source: latestRowDate ? 'latest-data' : 'system-date',
+      referenceDate: latestRowDate || new Date(currentYear, 0, 1),
+      referenceMonth: latestRowDate ? latestRowDate.getMonth() + 1 : 1,
+      source: latestRowDate ? 'archive-inferred' : 'missing',
     };
-  }, [filteredRows, currentYear]);
-  const forecast = useMemo(() => buildForecast(filteredRows, currentYear, mergeSettings(settings), forecastEvaluation.referenceDate), [filteredRows, currentYear, settings, forecastEvaluation.referenceDate]);
+  }, [managedRows, currentYear]);
+  const forecastSettings = useMemo(() => {
+    const merged = mergeSettings(settings);
+    if (dealerFilter === ALL && !search) return merged;
+    return { ...merged, annualTargetByYear: { ...merged.annualTargetByYear, [currentYear]: 0 } };
+  }, [settings, dealerFilter, search, currentYear]);
+  const forecast = useMemo(() => buildForecast(filteredRowsAllYears, currentYear, forecastSettings, forecastEvaluation.referenceDate), [filteredRowsAllYears, currentYear, forecastSettings, forecastEvaluation.referenceDate]);
 
   const comparisonYears = useMemo(() => {
     const previous = currentYear - 1;
     if (!availableYears.includes(previous)) return [] as Record<string, number | string>[];
-    const currentData = monthSeriesFromRows(activeRows, currentYear);
-    const previousData = monthSeriesFromRows(activeRows, previous);
+    const currentData = monthSeriesFromRows(filteredRowsAllYears, currentYear);
+    const previousData = monthSeriesFromRows(filteredRowsAllYears, previous);
     return currentData.map((row, index) => ({ month: row.monthShort, [currentYear]: row.erogato, [previous]: previousData[index]?.erogato || 0 }));
-  }, [activeRows, currentYear, availableYears]);
+  }, [filteredRowsAllYears, currentYear, availableYears]);
 
   useEffect(() => {
     if (!periodOptions.length) {
@@ -2202,14 +2219,8 @@ useEffect(() => {
     // AUTO = 20, 21, 23, 36
     // POS = tutto il resto.
     // Usiamo sempre le righe filtrate del DATABASE per evitare mismatch del foglio pivot.
-    const fromRows = productSeriesFromRows(filteredRows, currentYear);
-    const hasValues = fromRows.some((row) => row.AUTO > 0 || row.POS > 0);
-    if (hasValues) return fromRows;
-
-    // Fallback solo se non ci sono righe disponibili.
-    const fromMetrics = productSeriesFromMetrics(productMonthlyMetrics, currentYear);
-    return fromMetrics;
-  }, [filteredRows, currentYear, productMonthlyMetrics]);
+    return productSeriesFromRows(filteredRows, currentYear);
+  }, [filteredRows, currentYear]);
   const commissionMonthlyByProductSeries = useMemo(() => commissionsByProductSeries(filteredRows, currentYear), [filteredRows, currentYear]);
   const productMonthlyTotals = useMemo(() => productMonthlySeries.reduce((acc, row) => ({
     auto: acc.auto + row.AUTO,
@@ -2224,23 +2235,13 @@ useEffect(() => {
     const erogato = filteredRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
     const pratiche = filteredRows.length;
     const provvigioni = filteredRows.reduce((sum, row) => sum + row.provvigione, 0);
-    let polizze = filteredRows.reduce((sum, row) => sum + row.polizza, 0);
-    if (subagenteFilter === 'ALL' && productFilter === 'ALL' && !search) {
-      if (dealerFilter === 'ALL' && policyTotalsForYear.size > 0) {
-        polizze = Array.from(policyTotalsForYear.values()).reduce((sum, value) => sum + value, 0);
-      } else if (dealerFilter !== 'ALL' && dealerPolicyTotals.has(dealerFilter)) {
-        polizze = dealerPolicyTotals.get(dealerFilter) || 0;
-      }
-    }
+    const polizze = filteredRows.reduce((sum, row) => sum + row.polizza, 0);
     const dealerCount = new Set(filteredRows.map((row) => row.dealer)).size;
     return { erogato, pratiche, ticketMedio: pratiche ? erogato / pratiche : 0, provvigioni, polizze, dealerCount };
-  }, [filteredRows, dealerFilter, subagenteFilter, productFilter, search, policyTotalsForYear, dealerPolicyTotals]);
+  }, [filteredRows]);
 
   // Observation date belongs to the acquired portfolio, never to the selected dealer.
-  const portfolioAsOf = useMemo(() => {
-    const dates = activeRows.filter(row => row.year === currentYear).map((row) => row.dataLiquidazione?.slice(0, 10) || '').filter(Boolean).sort();
-    return dates[dates.length - 1] || `${currentYear}-01-01`;
-  }, [activeRows, currentYear]);
+  const portfolioAsOf = useMemo(() => sourceDataAsOf(managedRows.filter(row => row.year === currentYear)) || `${currentYear}-01-01`, [managedRows, currentYear]);
   const referenceMonth = Number(portfolioAsOf.slice(0, 4)) === currentYear ? Number(portfolioAsOf.slice(5, 7)) : 1;
 
   const smartDealerTable = useMemo(() => {
@@ -2330,15 +2331,6 @@ useEffect(() => {
 
     return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, prevYearRows, last12Rows, sum, count, ticket, avgRates, rateCoverage };
   }, [selectedDealerDetail, filteredRowsAllYears, currentYear]);
-  const managedDealerScope = useMemo(() => {
-    // Membership is established only by assignment-bearing rows in the selected
-    // analysis year. Older rows remain available solely as history.
-    const scopeRows = activeRows.filter(row => row.year !== currentYear || (
-      (dealerFilter === 'ALL' || row.dealer === dealerFilter)
-      && (subagenteFilter === 'ALL' || row.subagente === subagenteFilter)
-    ));
-    return buildManagedDealerScope(scopeRows.map(toDealerScopeRow), currentYear);
-  }, [activeRows, currentYear, dealerFilter, subagenteFilter]);
   const dealerTrendRows = useMemo(() => {
     // Free-text client search must not turn a subset into a dealer-wide judgement.
     if (search) return [];
@@ -2368,15 +2360,15 @@ useEffect(() => {
     dato: result.deltaPct === null ? `Δ ${euro(result.deltaEuro || 0)} (percentuale n/d)` : `${pct(result.deltaPct)} (${euro(result.deltaEuro || 0)})`,
     suggerimento: result.cautions.length ? result.cautions.join(' ') : 'Verificare con il dealer senza inferire cause dai soli dati di liquidazione.',
   })), [dealerTrendRows]);
-  const trendWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(activeRows, {
+  const trendWorkingDayBenchmark = useMemo(() => buildWorkingDayBenchmarkComparison(filteredRowsAllYears, {
     year: trendYear,
     month: trendMonthLimit,
-    macroProduct: trendMacroProduct,
-    branch: trendBranch,
-    dealer: trendDealer,
+    macroProduct: 'ALL',
+    branch: 'ALL',
+    dealer: 'ALL',
     periodMode: trendPeriodMode,
     referenceDate: new Date(),
-  }), [activeRows, trendYear, trendMonthLimit, trendMacroProduct, trendBranch, trendDealer, trendPeriodMode]);
+  }), [filteredRowsAllYears, trendYear, trendMonthLimit, trendPeriodMode]);
 
   const executiveWorkingDaySummary = useMemo(() => buildWorkingDayBenchmarkComparison(filteredRowsAllYears, {
     year: currentYear,
@@ -2568,6 +2560,7 @@ useEffect(() => {
     setSimulationSummary(simulationPendingSummary);
     setSimulationFileName(simulationPendingSummary.fileName);
     setSimulationMode(true);
+    setAnalysisFilters({ ...defaultAnalysisFilters(realCurrentYear), source: 'simulation' });
     setSimulationPendingRows([]);
     setSimulationPendingSummary(null);
     setTab('executive');
@@ -2575,6 +2568,7 @@ useEffect(() => {
 
   function exitSimulation() {
     setSimulationMode(false);
+    setAnalysisFilters({ ...defaultAnalysisFilters(realCurrentYear), source: 'real' });
     setSimulationRows([]);
     setSimulationFileName('');
     setSimulationSummary(null);
@@ -2612,13 +2606,13 @@ useEffect(() => {
     const printable = window.open('', '_blank');
     if (!printable) return;
     const dealerSummary = smartDealerTable.find((row) => row.name === selectedDealerDetail);
-    const latestDate = dealerDetail.dealerRows.length
-      ? new Date(dealerDetail.dealerRows[dealerDetail.dealerRows.length - 1].dateISO!)
-      : new Date();
+    const latestDate = portfolioAsOf === `${currentYear}-01-01` ? new Date(currentYear, 0, 1) : new Date(`${portfolioAsOf}T12:00:00`);
     const html = buildDealerReportHtml({
       dealerName: selectedDealerDetail,
       generatedAt: new Date(),
       updatedAt: latestDate,
+      contextSummary: filterLabels.map((item) => item.label).join(' · '),
+      sourceLabel: simulationMode ? 'Simulazione temporanea' : `${dataSourceMode === 'supabase' ? 'Supabase' : 'Archivio locale'} (copertura inferita)`,
       currentYearValue: dealerDetail.currentYearValue,
       prevYearValue: dealerDetail.prevYearValue,
       ytdMonthLimit: dealerDetail.ytdMonthLimit,
@@ -2700,8 +2694,8 @@ useEffect(() => {
   const currentMonthIndex = currentYear === now.getFullYear() ? now.getMonth() + 1 : fallbackCurrentMonth;
   const currentMonthCard = monthlyData[currentMonthIndex - 1];
   const currentMonthLabel = MONTHS_IT[currentMonthIndex - 1];
-  const previousYearSameMonth = monthSeriesFromRows(activeRows, currentYear - 1)[currentMonthIndex - 1];
-  const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : 0;
+  const previousYearSameMonth = monthSeriesFromRows(filteredRowsAllYears, currentYear - 1)[currentMonthIndex - 1];
+  const monthVsPrevYear = previousYearSameMonth?.erogato ? (currentMonthCard?.erogato || 0) / previousYearSameMonth.erogato - 1 : null;
   const currentMonthWorkedDays = executiveWorkingDaySummary.cutoffIndex;
   const currentMonthYtdErogato = executiveWorkingDaySummary.kpi.current;
   const previousMonthComparableErogato = executiveWorkingDaySummary.kpi.previousMonth;
@@ -2710,7 +2704,7 @@ useEffect(() => {
   const executiveDayRows = filteredRowsAllYears.filter((row) => row.dateISO && executiveLatestDate && toISODate(new Date(row.dateISO)) === executiveLatestDate);
   const executiveDayErogato = executiveDayRows.reduce((sum, row) => sum + row.importoFinanziato, 0);
   const executiveDayPractices = executiveDayRows.length;
-  const topFiveDealers = smartDealerTable.slice(0, 5);
+  const topFiveDealers = useMemo(() => [...buildSmartDealerRows(filteredRows, currentYear, referenceMonth)].sort((a, b) => b.erogato - a.erogato).slice(0, 5), [filteredRows, currentYear, referenceMonth]);
   const alertsBySeverity = useMemo(() => ({
     alta: dealerAlerts.filter((a) => a.severity === 'alta'),
     media: dealerAlerts.filter((a) => a.severity === 'media'),
@@ -2804,6 +2798,7 @@ useEffect(() => {
       .sort((a, b) => new Date(b.dateISO || 0).getTime() - new Date(a.dateISO || 0).getTime())
       .slice(0, 200);
   }, [filteredRows, portfolioMonthFilter]);
+  const portfolioLatestTotal = useMemo(() => filteredRows.filter((row) => row.dateISO && `${row.year}-${String(row.month).padStart(2, '0')}` === portfolioMonthFilter).length, [filteredRows, portfolioMonthFilter]);
 
   const sectionTitles: Record<typeof tab, string> = {
     executive: 'Executive Dashboard',
@@ -2898,23 +2893,24 @@ useEffect(() => {
               <input className="input search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cerca dealer, filiale, cliente, tabella" />
             </div>
             <div className="filters-grid">
-              <select className="select" value={yearFilter} onChange={(e) => setYearFilter(e.target.value)}>{availableYears.map((year) => <option key={year} value={String(year)}>{year}</option>)}</select>
-              <select className="select" value={dealerFilter} onChange={(e) => setDealerFilter(e.target.value)}>{dealers.map((dealer) => <option key={dealer} value={dealer}>{dealer === 'ALL' ? 'Tutti i dealer' : dealer}</option>)}</select>
+              <select aria-label="Periodo analizzato" className="select" value={yearFilter} onChange={(e) => setYearFilter(e.target.value)}><option value={String(realCurrentYear)}>{realCurrentYear} (anno corrente)</option>{availableYears.filter(year => year !== realCurrentYear).map((year) => <option key={year} value={String(year)}>{year}</option>)}</select>
+              <select aria-label="Dealer" className="select" value={dealerFilter} onChange={(e) => setDealerFilter(e.target.value)}>{dealers.map((dealer) => <option key={dealer.id} value={dealer.id}>{dealer.label}</option>)}</select>
               <select className="select" value={subagenteFilter} onChange={(e) => setSubagenteFilter(e.target.value)}>{subagenti.map((sub) => <option key={sub} value={sub}>{sub === 'ALL' ? 'Tutte le filiali' : sub}</option>)}</select>
               <select className="select" value={productFilter} onChange={(e) => setProductFilter(e.target.value)}>{products.map((product) => <option key={product} value={product}>{product === 'ALL' ? 'Tutti i prodotti' : product}</option>)}</select>
-              <select className="select" value={viewGranularity} onChange={(e) => setViewGranularity(e.target.value as ViewGranularity)}>
-                <option value="monthly">Vista mensile</option>
-                <option value="weekly">Vista settimanale</option>
-                <option value="daily">Vista giornaliera</option>
+              <select aria-label="Raggruppamento grafico" className="select" value={viewGranularity} onChange={(e) => setViewGranularity(e.target.value as ViewGranularity)}>
+                <option value="monthly">Raggruppa per mese</option>
+                <option value="weekly">Raggruppa per settimana</option>
+                <option value="daily">Raggruppa per giorno</option>
               </select>
             </div>
           </div>
           <div className="quick-pills">
-            <button className={`pill ${viewGranularity === 'daily' ? 'active' : ''}`} onClick={() => setViewGranularity('daily')}>Vista Giornaliera</button>
-            <button className={`pill ${viewGranularity === 'weekly' ? 'active' : ''}`} onClick={() => setViewGranularity('weekly')}>Vista Settimanale</button>
-            <button className={`pill ${viewGranularity === 'monthly' ? 'active' : ''}`} onClick={() => setViewGranularity('monthly')}>Vista Mensile</button>
-            <button className={`pill ${yearFilter === String(currentYear) ? 'active' : ''}`} onClick={() => setYearFilter(String(currentYear))}>Anno corrente</button>
+            <button className={`pill ${viewGranularity === 'daily' ? 'active' : ''}`} onClick={() => setViewGranularity('daily')}>Per giorno</button>
+            <button className={`pill ${viewGranularity === 'weekly' ? 'active' : ''}`} onClick={() => setViewGranularity('weekly')}>Per settimana</button>
+            <button className={`pill ${viewGranularity === 'monthly' ? 'active' : ''}`} onClick={() => setViewGranularity('monthly')}>Per mese</button>
+            <button className={`pill ${currentYear === realCurrentYear ? 'active' : ''}`} onClick={() => setYearFilter(String(realCurrentYear))}>Anno corrente ({realCurrentYear})</button>
           </div>
+          <div className="active-filter-summary" aria-live="polite"><strong>Contesto attivo:</strong>{filterLabels.map((item) => <button type="button" className="filter-chip" key={item.key} onClick={() => removeFilter(item.key)} title="Rimuovi filtro">{item.label} <X aria-hidden="true" /></button>)}<span className="muted">Fonte: {simulationMode ? 'simulazione temporanea' : 'archivio reale'} · copertura {portfolioAsOf === `${currentYear}-01-01` ? 'n/d' : `${portfolioAsOf} (inferita)`}</span></div>
           </div>
         </section>
 
@@ -3036,8 +3032,8 @@ useEffect(() => {
               </div>
               <div className="filters-grid trend-filters-grid">
                 <select className="select" value={trendYear} onChange={(e) => setTrendYear(Number(e.target.value))}>{availableYears.map((year) => <option key={`trend-year-${year}`} value={year}>{year}</option>)}</select>
-                <select className="select" value={trendMonthLimit} onChange={(e) => setTrendMonthLimit(Number(e.target.value))}>{MONTHS_IT.map((month, index) => <option key={month} value={index + 1}>{month}</option>)}</select>
-                <select className="select" value={trendPeriodMode} onChange={(e) => setTrendPeriodMode(e.target.value as TrendPeriodMode)}>
+                <select className="select" value={trendMonthLimit} onChange={(e) => { const month = Number(e.target.value); setTrendMonthLimit(month); setAnalysisFilters(previous => ({ ...previous, period: trendPeriodMode === 'month' ? { mode: 'month', year: currentYear, month } : { mode: 'ytd', year: currentYear, throughMonth: month } })); }}>{MONTHS_IT.map((month, index) => <option key={month} value={index + 1}>{month}</option>)}</select>
+                <select className="select" value={trendPeriodMode} onChange={(e) => { const mode = e.target.value as TrendPeriodMode; setTrendPeriodMode(mode); setAnalysisFilters(previous => ({ ...previous, period: mode === 'month' ? { mode: 'month', year: currentYear, month: trendMonthLimit } : { mode: 'ytd', year: currentYear, throughMonth: trendMonthLimit } })); }}>
                   <option value="ytd">YTD fino al mese selezionato</option>
                   <option value="month">Solo mese selezionato</option>
                 </select>
@@ -3047,7 +3043,7 @@ useEffect(() => {
                   <option value="POS">POS</option>
                 </select>
                 <select className="select" value={trendBranch} onChange={(e) => setTrendBranch(e.target.value)}>{trendBranches.map((branch) => <option key={`trend-branch-${branch}`} value={branch}>{branch === 'ALL' ? 'Tutte le filiali' : branch}</option>)}</select>
-                <select className="select" value={trendDealer} onChange={(e) => setTrendDealer(e.target.value)}>{trendDealers.map((dealer) => <option key={`trend-dealer-${dealer}`} value={dealer}>{dealer === 'ALL' ? 'Tutti i dealer' : dealer}</option>)}</select>
+                <select className="select" value={trendDealer} onChange={(e) => setTrendDealer(e.target.value)}>{trendDealers.map((dealer) => <option key={`trend-dealer-${dealer.id}`} value={dealer.id}>{dealer.label}</option>)}</select>
               </div>
               <div className="muted trend-filter-note">Periodo: <strong>{trendPeriodLabel}</strong> · Confronto {trendYear} vs {trendYear - 1}</div>
             </section>
@@ -3268,9 +3264,12 @@ useEffect(() => {
 
         {tab === 'forecast' && (
           <div className="stack">
+            {search ? <div className="simulation-warning"><TriangleAlert className="icon" />Forecast sospeso: la ricerca cliente descrive un sottoinsieme di pratiche, non una popolazione confrontabile.</div> : null}
+            {dealerFilter !== ALL ? <div className="simulation-warning"><TriangleAlert className="icon" />Target dealer: n/d. Il target generale non viene ripartito automaticamente sul dealer selezionato.</div> : null}
+            {forecastEvaluation.source === 'missing' ? <div className="simulation-warning"><TriangleAlert className="icon" />Copertura fonte assente per {currentYear}: forecast e confronti temporali non sono valutabili.</div> : null}
             <div className="mini-grid four">
-              <div className="mini-card"><div className="mini-label">Base valutazione</div><div className="mini-value small-value">{MONTHS_IT[forecastEvaluation.referenceMonth - 1]} {currentYear}</div><div className="mini-subtitle">{forecastEvaluation.source === 'latest-data' ? `Dati al ${forecastEvaluation.referenceDate.toLocaleDateString('it-IT')}` : 'Data di sistema'}</div></div>
-              <div className="mini-card"><div className="mini-label">Target anno</div><div className="mini-value">{euro0(forecast.annualTarget)}</div></div>
+              <div className="mini-card"><div className="mini-label">Orizzonte forecast annuale</div><div className="mini-value small-value">{MONTHS_IT[forecastEvaluation.referenceMonth - 1]} {currentYear}</div><div className="mini-subtitle">{forecastEvaluation.source === 'archive-inferred' ? `Copertura archivio inferita al ${forecastEvaluation.referenceDate.toLocaleDateString('it-IT')}` : 'Copertura n/d'}</div></div>
+              <div className="mini-card"><div className="mini-label">Target anno</div><div className="mini-value">{dealerFilter !== ALL || search ? 'n/d' : euro0(forecast.annualTarget)}</div></div>
               <div className="mini-card"><div className="mini-label">YTD reale</div><div className="mini-value">{euro0(forecast.ytd)}</div></div>
               <div className="mini-card"><div className="mini-label">Proiezione fine anno</div><div className="mini-value">{euro0(forecast.projectedAnnual)}</div></div>
               <div className="mini-card"><div className="mini-label">Gap vs target</div><div className="mini-value">{euro0(forecast.gapToTarget)}</div></div>
@@ -3482,7 +3481,7 @@ useEffect(() => {
             <div className="mini-grid four">
               <div className="mini-card"><div className="mini-label">Focus mese</div><div className="mini-value">{MONTHS_IT[referenceMonth - 1]}</div></div>
               <div className="mini-card"><div className="mini-label">Erogato mese</div><div className="mini-value">{euro0(currentMonthCard?.erogato || 0)}</div></div>
-              <div className="mini-card"><div className="mini-label">Vs mese precedente (YTD)</div><div className="mini-value">{pct(monthVsPrevMonth)}</div><div className="mini-note">Vs anno precedente: {pct(monthVsPrevYear)}</div></div>
+              <div className="mini-card"><div className="mini-label">Vs mese precedente (YTD)</div><div className="mini-value">{pct(monthVsPrevMonth)}</div><div className="mini-note">Vs anno precedente: {monthVsPrevYear === null ? 'n/d' : pct(monthVsPrevYear)}</div></div>
               <div className="mini-card"><div className="mini-label">Dealer top 5</div><div className="mini-value">{num(topFiveDealers.length)}</div></div>
             </div>
             <div className="panel">
@@ -3617,7 +3616,7 @@ useEffect(() => {
                 <select className="select" value={portfolioMonthFilter} onChange={(e) => setPortfolioMonthFilter(e.target.value)}>
                   {portfolioMonthOptions.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
                 </select>
-                <div className="readonly">{portfolioLatestRows.length} pratiche</div>
+                <div className="readonly">{portfolioLatestRows.length} di {portfolioLatestTotal} pratiche</div>
               </div>
               <div className="table-wrap"><table><thead><tr><th>Data</th><th>Dealer</th><th>Filiale</th><th>Cliente</th><th>Prodotto</th><th>Tabella</th><th className="right">Importo</th><th className="right">Provv.</th><th className="right">Polizza</th></tr></thead><tbody>{portfolioLatestRows.map((row) => <tr key={row.rowId}><td>{row.dateISO ? new Date(row.dateISO).toLocaleDateString('it-IT') : '-'}</td><td>{row.dealer}</td><td>{row.subagente}</td><td>{row.cliente}</td><td>{row.prodottoCode}</td><td>{row.tabella || '-'}</td><td className="right">{euro(row.importoFinanziato)}</td><td className="right">{euro(row.provvigione)}</td><td className="right">{euro(row.polizza)}</td></tr>)}{!portfolioLatestRows.length && <tr><td colSpan={9}>Nessuna pratica per il mese selezionato.</td></tr>}</tbody></table></div>
             </div>

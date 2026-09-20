@@ -41,6 +41,7 @@ export type DealerTrend = {
   state: TrendState; priority: TrendPriority; persistentDays: number;
   title: string; cautions: string[]; explanation: string;
 };
+export type DealerUniverseItem = { id: string; label: string };
 
 const HOLIDAYS = new Set(['01-01','01-06','04-25','05-01','06-02','08-15','11-01','12-08','12-25','12-26']);
 const parts = (iso: string) => iso.slice(0, 10).split('-').map(Number) as [number, number, number];
@@ -103,11 +104,13 @@ function evaluateAt(dealer:string, month:string, k:number, index:Map<string,Tren
   const strong=delta!==null&&delta<=-settings.strongDrop&&deficit!==null&&deficit>=settings.minAbsoluteGap&&(mad===0||mad===null||deficit>=settings.madMultiplier*mad);
   return {eligible,valid,common,observations,current,b,bn,delta,mad,deficit,strong};
 }
-export function buildDealerTrends(rows:TrendRow[],context:AnalysisContext,settings:TrendSettings=DEFAULT_TREND_SETTINGS):DealerTrend[]{
+export function buildDealerTrends(rows:TrendRow[],context:AnalysisContext,settings:TrendSettings=DEFAULT_TREND_SETTINGS,managedDealerUniverse?:DealerUniverseItem[]):DealerTrend[]{
   const index=indexTrendRows(rows), actualDates=workingDates(context.month).filter(d=>d<=context.dataAsOf);
   const currentCoverage=covering(context.coverage,`${context.month}-01`,context.dataAsOf);
   const actualK=actualDates.length;
-  const dealers=new Map<string,string>(); rows.forEach(r=>{if(r.liquidationDate&&r.liquidationDate.slice(0,7)<=context.month)dealers.set(r.dealerId,r.dealerLabel)});
+  const dealers=new Map<string,string>();
+  if (managedDealerUniverse) managedDealerUniverse.forEach(dealer=>dealers.set(dealer.id,dealer.label));
+  else rows.forEach(r=>{if(r.liquidationDate&&r.liquidationDate.slice(0,7)<=context.month)dealers.set(r.dealerId,r.dealerLabel)});
   const result: DealerTrend[] = [...dealers].map(([dealerId,dealerLabel])=>{
     const e=evaluateAt(dealerId,context.month,actualK,index,context,settings);
     const actual=observe(index,dealerId,context.month,actualK);

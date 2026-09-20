@@ -43,6 +43,7 @@ import {
   Menu,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   MoreHorizontal,
   X,
 } from 'lucide-react';
@@ -51,6 +52,7 @@ import { diffPct, euro, euro0, num, pct } from './utils/formatters';
 import { cleanNumber, getProductFamilyFromCode, normalizeMonthLabel, normalizeProductLabel, normalizeText, safeUpper } from './utils/normalizers';
 import { buildDealerReportHtml } from './utils/dealerReport';
 import { buildDealerTrends, type AnalysisContext } from './domain/dealerTrend';
+import { buildManagedDealerScope, type DealerScopeRow } from './domain/dealerScope';
 import { supabase } from "./supabase";
 type SourceRow = Record<string, unknown>;
 
@@ -94,6 +96,15 @@ type AppRow = {
   month: number;
   dateISO: string | null;
 };
+
+function toDealerScopeRow(row: AppRow): DealerScopeRow {
+  return {
+    year: row.year, dealerLabel: row.dealer, dealerCode: row.dealerCode,
+    puntoVendita: row.puntoVendita, convenzionato: row.convenzionato,
+    agenteCode: row.agenteCode, agente: row.agente,
+    subagenteCode: row.subagenteCode, subagente: row.subagente,
+  };
+}
 
 type Settings = {
   annualTargetByYear: Record<number, number>;
@@ -283,7 +294,7 @@ async function loadRemoteSettings(): Promise<PersistedSettings | null> {
 
   if (error) throw error;
   const value = data?.value as Partial<Settings> | { settings?: Partial<Settings> } | null | undefined;
-  const remoteSettings = value && 'settings' in value ? value.settings : value;
+  const remoteSettings: Partial<Settings> | undefined = value && 'settings' in value ? value.settings : (value || undefined) as Partial<Settings> | undefined;
   if (!hasMeaningfulSettings(remoteSettings)) return null;
 
   return { settings: mergeSettings(remoteSettings || {}), updatedAt: data?.updated_at || new Date(0).toISOString() };
@@ -1559,7 +1570,7 @@ function buildForecast(rows: AppRow[], year: number, settings: Settings, referen
   return { annualTarget: target, projectedAnnual, ytd, gapToTarget: target ? projectedAnnual - target : 0, monthlyForecast };
 }
 
-function KPI({ title, value, subtitle, icon: Icon, className = '' }: { title: string; value: string; subtitle: string; icon: React.ComponentType<{ className?: string }>; className?: string }) {
+function KPI({ title, value, subtitle = '', icon: Icon, className = '' }: { title: string; value: string; subtitle?: string; icon: React.ComponentType<{ className?: string }>; className?: string }) {
 
 
   return (
@@ -1971,6 +1982,7 @@ useEffect(() => {
     }
     return timeSeriesData;
   }, [timeSeriesData, viewGranularity]);
+  const periodOptionKey = (row: (typeof periodOptions)[number]) => viewGranularity === 'monthly' && 'monthIndex' in row ? String(row.monthIndex) : row.key;
   const branchMonthOptions = useMemo(() => {
     const months = Array.from(new Set(filteredRows.map((row) => row.month))).filter((month) => month >= 1 && month <= 12).sort((a, b) => a - b);
     return months.length ? months : Array.from({ length: 12 }, (_, index) => index + 1);
@@ -2104,10 +2116,10 @@ useEffect(() => {
       setSelectedPeriodKey('');
       return;
     }
-    const hasCurrent = periodOptions.some((row) => (viewGranularity === 'monthly' ? String(row.monthIndex) : row.key) === selectedPeriodKey);
+    const hasCurrent = periodOptions.some((row) => periodOptionKey(row) === selectedPeriodKey);
     if (!hasCurrent) {
       const fallback = periodOptions[periodOptions.length - 1];
-      setSelectedPeriodKey(viewGranularity === 'monthly' ? String(fallback.monthIndex) : fallback.key);
+      setSelectedPeriodKey(periodOptionKey(fallback));
     }
   }, [periodOptions, selectedPeriodKey, viewGranularity]);
 
@@ -2129,7 +2141,7 @@ useEffect(() => {
   }, [selectedPeriodRows]);
 
   const selectedPeriodMeta = useMemo(() => {
-    return periodOptions.find((row) => (viewGranularity === 'monthly' ? String(row.monthIndex) : row.key) === selectedPeriodKey) || null;
+    return periodOptions.find((row) => periodOptionKey(row) === selectedPeriodKey) || null;
   }, [periodOptions, selectedPeriodKey, viewGranularity]);
   const dailyExecutiveData = useMemo(() => {
     const map = new Map<string, { key: string; label: string; fullLabel: string; erogato: number; pratiche: number }>();
@@ -2226,7 +2238,7 @@ useEffect(() => {
 
   // Observation date belongs to the acquired portfolio, never to the selected dealer.
   const portfolioAsOf = useMemo(() => {
-    const dates = activeRows.map((row) => row.dataLiquidazione?.slice(0, 10) || '').filter(Boolean).sort();
+    const dates = activeRows.filter(row => row.year === currentYear).map((row) => row.dataLiquidazione?.slice(0, 10) || '').filter(Boolean).sort();
     return dates[dates.length - 1] || `${currentYear}-01-01`;
   }, [activeRows, currentYear]);
   const referenceMonth = Number(portfolioAsOf.slice(0, 4)) === currentYear ? Number(portfolioAsOf.slice(5, 7)) : 1;
@@ -2318,28 +2330,35 @@ useEffect(() => {
 
     return { dealerRows, last12Monthly, insights, currentMonth, currentYearValue, prevYearValue, ytdMonthLimit, currentMonthRows, previousMonthRows, ytdCurrentRows, ytdPrevRows, currentYearRows, prevYearRows, last12Rows, sum, count, ticket, avgRates, rateCoverage };
   }, [selectedDealerDetail, filteredRowsAllYears, currentYear]);
+  const managedDealerScope = useMemo(() => {
+    // Membership is established only by assignment-bearing rows in the selected
+    // analysis year. Older rows remain available solely as history.
+    const scopeRows = activeRows.filter(row => row.year !== currentYear || (
+      (dealerFilter === 'ALL' || row.dealer === dealerFilter)
+      && (subagenteFilter === 'ALL' || row.subagente === subagenteFilter)
+    ));
+    return buildManagedDealerScope(scopeRows.map(toDealerScopeRow), currentYear);
+  }, [activeRows, currentYear, dealerFilter, subagenteFilter]);
   const dealerTrendRows = useMemo(() => {
     // Free-text client search must not turn a subset into a dealer-wide judgement.
     if (search) return [];
-    const economicScope = activeRows.filter((row) => (subagenteFilter === 'ALL' || row.subagente === subagenteFilter)
-      && (productFilter === 'ALL' || row.prodottoCode === productFilter)
-      && (dealerFilter === 'ALL' || row.dealer === dealerFilter));
-    const dates = economicScope.map(row => row.dataLiquidazione?.slice(0, 10) || '').filter(Boolean).sort();
-    if (!dates.length) return [];
+    const managedIds = new Set(managedDealerScope.dealers.map(dealer => dealer.id));
+    const economicScope = activeRows.map(row => ({ row, dealerId: managedDealerScope.dealerIdForRow(toDealerScopeRow(row)) }))
+      .filter(({ row, dealerId }) => dealerId && managedIds.has(dealerId)
+        && (productFilter === 'ALL' || row.prodottoCode === productFilter));
+    if (!managedDealerScope.dealers.length) return [];
+    const dates = activeRows.filter(row => row.year === currentYear).map(row => row.dataLiquidazione?.slice(0, 10) || '').filter(Boolean).sort();
     const month = `${currentYear}-${String(referenceMonth).padStart(2, '0')}`;
     const ctx: AnalysisContext = {
       month, dataAsOf: portfolioAsOf, monthState: portfolioAsOf.slice(0, 7) === month ? 'open' : 'closed',
       coverage: [{ from: dates[0].slice(0, 7) + '-01', to: portfolioAsOf, source: simulationMode ? 'simulazione' : 'archivio legacy', status: 'inferred' }],
       qualityIssues: simulationMode ? [] : ['Copertura legacy non confermata: verificare il cutoff in Dati / Impostazioni.'],
     };
-    return buildDealerTrends(economicScope.map(row => ({
-      id: row.rowId,
-      dealerId: row.dealerCode ? `${row.puntoVendita ? 'PV' : 'CONV'}:${row.dealerCode}` : `MISSING:${row.subagenteCode || row.subagente}:${row.dealer}:${row.rowId}`,
-      dealerLabel: row.dealer,
-      liquidationDate: row.dataLiquidazione,
-      importoFinanziato: row.importoFinanziato,
-    })), ctx);
-  }, [activeRows, currentYear, referenceMonth, portfolioAsOf, simulationMode, search, dealerFilter, subagenteFilter, productFilter]);
+    return buildDealerTrends(economicScope.map(({row,dealerId}) => ({
+      id: row.rowId, dealerId: dealerId!, dealerLabel: row.dealer,
+      liquidationDate: row.dataLiquidazione, importoFinanziato: row.importoFinanziato,
+    })), ctx, undefined, managedDealerScope.dealers.map(({id,label}) => ({id,label})));
+  }, [activeRows, currentYear, referenceMonth, portfolioAsOf, simulationMode, search, productFilter, managedDealerScope]);
   const dealerAlerts = useMemo<DealerAlert[]>(() => dealerTrendRows.map(result => ({
     key: result.key,
     dealer: result.dealerLabel,
@@ -2698,6 +2717,13 @@ useEffect(() => {
     bassa: dealerAlerts.filter((a) => a.severity === 'bassa'),
     positiva: dealerAlerts.filter((a) => a.severity === 'positiva'),
   }), [dealerAlerts]);
+  const dealerAlertGroups = useMemo(() => ([
+    { key: 'high', label: 'Priorità alta', items: dealerTrendRows.filter(item => item.priority === 'high') },
+    { key: 'monitor', label: 'Da monitorare', items: dealerTrendRows.filter(item => item.priority === 'monitor' && item.state !== 'not-assessable') },
+    { key: 'positive', label: 'Crescita / segnali positivi', items: dealerTrendRows.filter(item => item.priority === 'informational' && (item.state === 'growth' || item.state === 'strong-growth')) },
+    { key: 'quality', label: 'Non valutabili / qualità insufficiente', items: dealerTrendRows.filter(item => item.state === 'not-assessable') },
+    { key: 'regular', label: 'Andamento in linea', items: dealerTrendRows.filter(item => item.priority === 'informational' && item.state === 'in-line') },
+  ]), [dealerTrendRows]);
   const dataQuality = useMemo(() => {
     const duplicates = new Map<string, number>();
     activeRows.forEach((r) => duplicates.set(r.stableIdentity, (duplicates.get(r.stableIdentity) || 0) + 1));
@@ -2962,7 +2988,7 @@ useEffect(() => {
               <div className="filters-grid period-grid">
                 <select className="select" value={selectedPeriodKey} onChange={(e) => setSelectedPeriodKey(e.target.value)}>
                   {periodOptions.map((item) => (
-                    <option key={item.key} value={viewGranularity === 'monthly' ? String(item.monthIndex) : item.key}>{item.fullLabel}</option>
+                    <option key={item.key} value={periodOptionKey(item)}>{item.fullLabel}</option>
                   ))}
                 </select>
                 <div className="readonly">{selectedPeriodSummary ? `${num(selectedPeriodSummary.pratiche)} pratiche` : 'Nessuna pratica'}</div>
@@ -3389,7 +3415,7 @@ useEffect(() => {
                   <div className="mini-card"><div className="mini-label">Rate medie mese corr./prec.</div><div className="mini-value">{dealerDetail.avgRates(dealerDetail.currentMonthRows) === null ? 'n/d' : num(dealerDetail.avgRates(dealerDetail.currentMonthRows) || 0, 1)} / {dealerDetail.avgRates(dealerDetail.previousMonthRows) === null ? 'n/d' : num(dealerDetail.avgRates(dealerDetail.previousMonthRows) || 0, 1)}</div></div>
                 </div>
                 <div className="panel-header"><h3>Andamento ultimi 12 mesi</h3></div>
-                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={dealerDetail.last12Monthly}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis yAxisId="left" tickFormatter={(value: number) => euro0(value)} /><YAxis yAxisId="right" orientation="right" allowDecimals={false} tickFormatter={(value: number) => num(value)} /><Tooltip formatter={(value: number, name: string, item: { dataKey?: string }) => (item?.dataKey === 'pratiche' || name === 'Pratiche') ? num(value) : euro(value)} /><Legend /><Line type="monotone" dataKey="erogato" name="Erogato" yAxisId="left" stroke="#0ea5e9" strokeWidth={3} /><Line type="monotone" dataKey="pratiche" name="Pratiche" yAxisId="right" stroke="#22c55e" strokeWidth={2} /></LineChart></ResponsiveContainer></div>
+                <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={dealerDetail.last12Monthly}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis yAxisId="left" tickFormatter={(value: number) => euro0(value)} /><YAxis yAxisId="right" orientation="right" allowDecimals={false} tickFormatter={(value: number) => num(value)} /><Tooltip formatter={(value: number, name: string, item) => (item?.dataKey === 'pratiche' || name === 'Pratiche') ? num(value) : euro(value)} /><Legend /><Line type="monotone" dataKey="erogato" name="Erogato" yAxisId="left" stroke="#0ea5e9" strokeWidth={3} /><Line type="monotone" dataKey="pratiche" name="Pratiche" yAxisId="right" stroke="#22c55e" strokeWidth={2} /></LineChart></ResponsiveContainer></div>
                 <div className="table-wrap"><table><thead><tr><th>Mese</th><th className="right">Erogato</th><th className="right">Pratiche</th><th className="right">Ticket medio</th><th className="right">Rate medie</th></tr></thead><tbody>{dealerDetail.last12Monthly.map((m) => <tr key={m.month}><td>{m.month}</td><td className="right">{euro(m.erogato)}</td><td className="right">{num(m.pratiche)}</td><td className="right">{euro(m.ticketMedio)}</td><td className="right">{m.rateMedie === null ? 'n/d' : num(m.rateMedie, 1)}</td></tr>)}</tbody></table></div>
                 <div className="panel-header"><h3>Insight commerciali automatici</h3></div>
                 <div className="quick-pills">{dealerDetail.insights.map((i) => <span key={i.key} className={`pill ${i.positive ? 'active' : ''}`}>{i.label}</span>)}</div>
@@ -3400,23 +3426,54 @@ useEffect(() => {
           </div>
         )}
         {tab === 'alerts' && (
-          <div className="stack">
+          <div className="stack alerts-page">
             {search ? <div className="simulation-warning"><TriangleAlert className="icon" />Alert dealer sospesi: la ricerca cliente rappresenta un sottoinsieme e non può descrivere l’intero dealer.</div> : null}
-            {(['alta', 'media', 'bassa', 'positiva'] as AlertSeverity[]).map((sev) => (
-              <div className="panel" key={sev}>
-                <div className="panel-header"><h3>Alert {sev}</h3><span>{alertsBySeverity[sev].length} elementi</span></div>
-                <div className="list-stack">
-                  {alertsBySeverity[sev].map((a) => (
-                    <div key={a.key} className="list-item">
-                      <div>
-                        <div className="list-title">{sev === 'alta' ? <ShieldAlert className="inline-icon" /> : sev === 'positiva' ? <CircleCheck className="inline-icon" /> : <TriangleAlert className="inline-icon" />} {a.dealer} · {a.tipo}</div>
-                        <div className="list-subtitle"><strong>Perché questo alert?</strong> {a.descrizione} · {a.dato}</div>
+            <section className="alert-summary-grid" aria-label="Riepilogo alert dealer">
+              <div className="mini-card"><div className="mini-label">Dealer analizzati</div><div className="mini-value">{num(dealerTrendRows.length)}</div></div>
+              <div className="mini-card alert-kpi-high"><div className="mini-label">Priorità alta</div><div className="mini-value">{num(dealerTrendRows.filter(item => item.priority === 'high').length)}</div></div>
+              <div className="mini-card"><div className="mini-label">Da monitorare</div><div className="mini-value">{num(dealerTrendRows.filter(item => item.priority === 'monitor').length)}</div></div>
+              <div className="mini-card"><div className="mini-label">Dati insufficienti</div><div className="mini-value">{num(dealerTrendRows.filter(item => item.state === 'not-assessable').length)}</div></div>
+              <div className="mini-card alert-period-card"><div className="mini-label">Periodo osservato</div><div className="mini-value small-value">{MONTHS_IT[referenceMonth - 1]} {currentYear}</div><div className="mini-note">Dati al {portfolioAsOf} · {simulationMode ? 'simulazione' : 'copertura legacy inferita'}</div></div>
+            </section>
+            {managedDealerScope.excludedUnassigned > 0 ? <div className="simulation-warning"><TriangleAlert className="icon" />{managedDealerScope.excludedUnassigned} righe {currentYear} senza agente/subagente assegnato non determinano appartenenza al portafoglio Alert.</div> : null}
+            {!search && dealerAlertGroups.map((group, groupIndex) => (
+              <details className="alert-group panel" key={group.key} open={groupIndex === 0 && group.items.length > 0}>
+                <summary className="alert-group-summary"><span>{group.label}</span><span className="alert-group-count">{group.items.length} dealer</span><ChevronDown className="alert-chevron" /></summary>
+                <div className="alert-accordion-list">
+                  {group.items.map((item) => (
+                    <details key={item.key} className={`dealer-alert-card priority-${item.priority}`}>
+                      <summary className="dealer-alert-summary">
+                        <span className="alert-main"><span className="alert-dealer">{item.priority === 'high' ? <ShieldAlert className="inline-icon" /> : item.state.includes('growth') ? <CircleCheck className="inline-icon" /> : <TriangleAlert className="inline-icon" />}{item.dealerLabel}</span><span className="alert-signal">{item.title}</span></span>
+                        <span className="alert-compact-metrics">
+                          <span><small>Erogato</small><strong>{euro0(item.actualAmount)}</strong></span>
+                          <span><small>Variazione</small><strong>{item.deltaPct === null ? 'n/d' : pct(item.deltaPct)}</strong></span>
+                          <span><small>Delta</small><strong>{item.deltaEuro === null ? 'n/d' : euro0(item.deltaEuro)}</strong></span>
+                          <span><small>Pratiche</small><strong>{num(item.currentPractices)} / {item.benchmarkPractices === null ? 'n/d' : num(item.benchmarkPractices)}</strong></span>
+                        </span>
+                        <span className={`coverage-badge coverage-${item.coverageStatus}`}>{item.coverageStatus === 'confirmed' ? 'Dati confermati' : item.coverageStatus === 'inferred' ? 'Dati inferiti' : 'Copertura ignota'}</span>
+                        <ChevronDown className="alert-chevron" />
+                      </summary>
+                      <div className="dealer-alert-detail">
+                        <div className="alert-detail-grid">
+                          <div><small>MTD effettivo</small><strong>{euro0(item.actualAmount)}</strong><span>{num(item.actualWorkingDays)} giorni lavorativi</span></div>
+                          <div><small>MTD confrontabile</small><strong>{euro0(item.comparableAmount)}</strong><span>cutoff comune: giorno {item.commonWorkingDays}</span></div>
+                          <div><small>Benchmark mediano</small><strong>{item.benchmark === null ? 'n/d' : euro0(item.benchmark)}</strong><span>{item.benchmarkMonths.length} mesi utilizzati</span></div>
+                          <div><small>Deficit economico</small><strong>{item.deficitEuro === null ? 'n/d' : euro0(item.deficitEuro)}</strong><span>MAD: {item.mad === null ? 'n/d' : euro0(item.mad)}</span></div>
+                          <div><small>Mese precedente</small><strong>{item.previousMonth ? euro0(item.previousMonth.amount) : 'n/d'}</strong><span>{item.previousMonth ? `${item.previousMonth.practices} pratiche · cutoff ${item.previousMonth.cutoff}` : 'copertura assente'}</span></div>
+                          <div><small>Anno precedente</small><strong>{item.previousYear ? euro0(item.previousYear.amount) : 'n/d'}</strong><span>{item.previousYear ? `${item.previousYear.practices} pratiche · cutoff ${item.previousYear.cutoff}` : 'copertura assente'}</span></div>
+                          <div><small>Ticket corrente</small><strong>{item.currentPractices ? euro0(item.actualAmount / item.currentPractices) : 'n/d'}</strong><span>Erogato / pratiche</span></div>
+                          <div><small>Persistenza</small><strong>{num(item.persistentDays)} giorni</strong><span>Priorità: {item.priority}</span></div>
+                        </div>
+                        <div className="alert-why"><strong>Perché questo alert?</strong><p>{item.explanation}</p></div>
+                        <div className="alert-meta"><strong>Mesi benchmark:</strong> {item.benchmarkMonths.join(', ') || 'nessuno'} · <strong>Data analizzata:</strong> {item.asOf} · <strong>Copertura:</strong> {item.coverageStatus}</div>
+                        {item.cautions.length ? <ul className="alert-cautions">{item.cautions.map((caution, index) => <li key={`${item.key}-caution-${index}`}>{caution}</li>)}</ul> : null}
+                        <details className="methodology-disclosure"><summary>Dettaglio metodologico</summary><p>L’erogato è <code>importoFinanziato</code> liquidato. Il confronto usa la mediana dei cumulati dei sei mesi precedenti al medesimo orizzonte lavorativo; MAD e persistenza sono filtri operativi, non probabilità statistiche. Il segnale non prova perdita del cliente o passaggio alla concorrenza.</p></details>
                       </div>
-                      <div className="badge">{a.suggerimento}</div>
-                    </div>
+                    </details>
                   ))}
+                  {!group.items.length ? <div className="empty-state">Nessun dealer in questo gruppo.</div> : null}
                 </div>
-              </div>
+              </details>
             ))}
           </div>
         )}

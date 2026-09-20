@@ -14,6 +14,14 @@ L'archivio corrente non dispone di snapshot di acquisizione né di una colonna d
 
 L'identità preferisce il codice punto vendita, altrimenti il codice convenzionato. In mancanza di codice usa una chiave prudente e non fonde automaticamente omonimi. Per i nuovi import l'occorrenza conserva pratiche distinte con gli stessi attributi; la ripetizione dello stesso file mantiene chiavi deterministiche.
 
+### Perimetro gestionale e identità
+
+L'universo Alert è costruito separatamente dallo storico. Un dealer è nel `managedDealerUniverse` soltanto se una riga dell'anno di analisi contiene un'assegnazione gestionale. La precedenza canonica è: codice `AGENTE`, descrizione `AGENTE`, codice `SUBAGENTE`, descrizione `SUBAGENTE`. Le righe dell'anno senza alcuna assegnazione non abilitano automaticamente il dealer; vengono segnalate come legacy non assegnate. La presenza nel solo archivio storico non costituisce assegnazione corrente.
+
+Una volta fissato l'universo, il motore recupera per quei soli dealer le righe degli anni precedenti necessarie a benchmark, mese precedente e YoY. Un dealer assegnato che non ha liquidazioni nel mese resta quindi analizzabile a zero; un dealer storico non assegnato resta fuori dal risultato, qualunque sia il suo volume passato.
+
+L'identità usa, nell'ordine, codice punto vendita, codice convenzionato e codice dealer generico. Una riga senza codice viene ricondotta a un'identità codificata soltanto quando la combinazione normalizzata di label e perimetro gestionale individua un unico candidato; in caso di omonimia rimane una identità legacy distinta e deterministica.
+
 ## Formula e regole operative
 
 La finestra `H` sono i sei mesi di calendario immediatamente precedenti, senza mese corrente o futuro. Un mese coperto dopo la prima osservazione del dealer senza righe vale zero; un mese non coperto o anteriore al limite osservabile è mancante.
